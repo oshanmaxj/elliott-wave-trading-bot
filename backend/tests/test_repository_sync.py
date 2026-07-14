@@ -37,10 +37,31 @@ async def test_historical_sync_and_duplicate_execution(session_factory,monkeypat
     assert one['created']==3 and two['created']==0 and two['updated']==3
 
 
+async def test_historical_sync_triggers_analysis_backfill(session_factory, monkeypatch):
+    import app.services.historical_sync as module
+    calls = []
+
+    class FakeBackfill:
+        def __init__(self, session_factory):
+            self.session_factory = session_factory
+
+        async def run(self, symbol, timeframe, **kwargs):
+            calls.append((symbol, timeframe, kwargs))
+            return {"processed": 3}
+
+    monkeypatch.setattr(module, 'SessionLocal', session_factory)
+    monkeypatch.setattr(module, 'AnalysisBackfillService', FakeBackfill)
+    monkeypatch.setattr(module, 'log_event', lambda *a, **k: None)
+    report = await HistoricalSyncService(FakeClient()).sync('BTCUSDT', '1h', datetime(2025, 1, 1, tzinfo=timezone.utc))
+
+    assert calls and calls[0][0:2] == ('BTCUSDT', '1h')
+    assert calls[0][2]['limit'] is None
+    assert report['analysis_backfill']['processed'] == 3
+
+
 def test_gap_detection(session_factory,monkeypatch):
     import app.services.historical_sync as module
     monkeypatch.setattr(module,'SessionLocal',session_factory)
     with session_factory.begin() as db:
         symbol=ensure_symbol(db,'BTCUSDT');upsert_candle(db,symbol.id,'1h',data(0));upsert_candle(db,symbol.id,'1h',data(2))
     assert len(HistoricalSyncService(FakeClient()).detect_gaps('BTCUSDT','1h'))==1
-

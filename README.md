@@ -58,6 +58,7 @@ Stop services with `docker compose down`. To also remove persisted development d
 | `API_HOST` / `API_PORT` | Backend bind address | `0.0.0.0` / `8000` |
 | `FRONTEND_URL` | Exact CORS origin | `http://localhost:5173` |
 | `ENABLE_STARTUP_SYNC` | Run initial REST sync | `true` |
+| `ANALYZE_HISTORICAL_CANDLES` | Analyze closed candles after historical sync | `true` |
 | `ENABLE_MARKET_STREAM` | Run live public WebSocket | `true` |
 
 Only supported symbols and timeframes pass validation. Runtime analysis settings are available at `GET/PUT /api/settings` and stored in PostgreSQL after the first update.
@@ -103,6 +104,17 @@ curl -X POST http://localhost:8000/api/market-data/sync \
 
 The response reports fetched, created, updated, detected-gap, and backfilled counts. Binance errors and rate limits use bounded exponential-backoff retries. Existing closed candles are not downgraded by stale open updates.
 
+Run or rebuild analysis manually, and inspect live progress:
+
+```bash
+curl -X POST http://localhost:8000/api/analysis/backfill \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"BTCUSDT","timeframe":"1h","start_time":null,"end_time":null,"limit":500,"rebuild":false}'
+curl http://localhost:8000/api/analysis/backfill/status
+```
+
+Set `limit` to `null` to process every selected closed candle. `rebuild: true` deletes derived analysis only for the requested symbol/timeframe before chronological replay; candles are never deleted.
+
 ## Local development without Compose
 
 Start PostgreSQL and Redis, then set `DATABASE_URL` and `REDIS_URL` to localhost addresses.
@@ -140,7 +152,7 @@ Frontend production build:
 
 ```bash
 docker compose build frontend
-# or locally: cd frontend && npm install && npm run build
+# or locally: cd frontend && npm install && npm test && npm run build
 ```
 
 Validate the Compose file with `docker compose config`.

@@ -1,8 +1,8 @@
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -12,14 +12,15 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     binance_rest_base_url: str = "https://fapi.binance.com"
     binance_ws_base_url: str = "wss://fstream.binance.com/stream"
-    default_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
-    default_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "4h"])
+    default_symbols: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    default_timeframes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["15m", "1h", "4h"])
     historical_candle_limit: int = Field(default=500, ge=10, le=1500)
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     frontend_url: str = "http://localhost:5173"
     enable_startup_sync: bool = True
+    analyze_historical_candles: bool = True
     enable_market_stream: bool = True
     environment: Literal["development", "test", "production"] = "development"
 
@@ -51,4 +52,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

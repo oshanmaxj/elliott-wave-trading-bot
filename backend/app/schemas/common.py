@@ -135,6 +135,55 @@ class SyncRequest(BaseModel):
         return value
 
 
+class AnalysisBackfillRequest(BaseModel):
+    symbol: str
+    timeframe: str
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    limit: int | None = Field(500, ge=1, le=1500)
+    rebuild: bool = False
+
+    @field_validator("symbol")
+    @classmethod
+    def symbol_supported(cls, value: str) -> str:
+        value = value.upper()
+        if value not in SUPPORTED_SYMBOLS:
+            raise ValueError("unsupported symbol")
+        return value
+
+    @field_validator("timeframe")
+    @classmethod
+    def timeframe_supported(cls, value: str) -> str:
+        if value not in SUPPORTED_TIMEFRAMES:
+            raise ValueError("unsupported timeframe")
+        return value
+
+
+class AnalysisBackfillReport(BaseModel):
+    symbol: str
+    timeframe: str
+    total_candles: int
+    processed: int
+    skipped: int
+    failed: int
+    events_generated: int
+    started_at: datetime
+    completed_at: datetime
+    duration_ms: float
+
+
+class AnalysisBackfillStatusOut(BaseModel):
+    running: bool
+    symbol: str | None
+    timeframe: str | None
+    total_candles: int
+    processed_candles: int
+    failed_candles: int
+    progress_percentage: float
+    started_at: datetime | None
+    last_completed_at: datetime | None
+
+
 class RuntimeSettings(BaseModel):
     enabled_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
     enabled_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "4h"])
@@ -159,4 +208,3 @@ class RuntimeSettings(BaseModel):
         if not values or not set(values) <= SUPPORTED_TIMEFRAMES:
             raise ValueError("unsupported timeframe")
         return values
-

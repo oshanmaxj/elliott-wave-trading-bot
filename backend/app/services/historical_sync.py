@@ -10,6 +10,7 @@ from app.database.session import SessionLocal
 from app.market_data.binance_rest import BinanceRESTClient
 from app.models import Candle, Symbol
 from app.repositories.market import ensure_symbol, upsert_candle
+from app.services.analysis_backfill import AnalysisBackfillService
 
 
 class HistoricalSyncService:
@@ -38,6 +39,10 @@ class HistoricalSyncService:
                     _, was_created = upsert_candle(db, symbol_row.id, timeframe, data)
                     backfilled += int(was_created)
         report = {"symbol": symbol, "timeframe": timeframe, "fetched": len(candles), "created": created, "updated": updated, "gaps_detected": len(gaps), "backfilled": backfilled}
+        if config.analyze_historical_candles:
+            report["analysis_backfill"] = await AnalysisBackfillService(session_factory=SessionLocal).run(
+                symbol, timeframe, start_time=start_time, end_time=end_time, limit=None
+            )
         log_event("INFO", "historical_sync", "sync_complete", "Historical synchronization completed", report)
         return report
 

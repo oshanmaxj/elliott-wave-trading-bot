@@ -8,7 +8,8 @@ from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES
 from app.database.session import get_db
 from app.market_data.binance_ws import market_stream
 from app.models import AnalysisSnapshot, BotLog, Candle, FVGZone, MarketStructureEvent, SwingPoint, Symbol
-from app.schemas.common import AnalysisOut, BotLogOut, CandleOut, FVGOut, RuntimeSettings, StructureOut, SwingOut, SymbolOut, SyncRequest
+from app.schemas.common import AnalysisBackfillReport, AnalysisBackfillRequest, AnalysisBackfillStatusOut, AnalysisOut, BotLogOut, CandleOut, FVGOut, RuntimeSettings, StructureOut, SwingOut, SymbolOut, SyncRequest
+from app.services.analysis_backfill import AnalysisBackfillService, backfill_status
 from app.services.broadcast import broadcaster
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
@@ -90,6 +91,18 @@ async def sync_market_data(body: SyncRequest):
     return await HistoricalSyncService().sync(body.symbol, body.timeframe, body.start_time, body.end_time)
 
 
+@router.post("/analysis/backfill", response_model=AnalysisBackfillReport)
+async def analysis_backfill(body: AnalysisBackfillRequest):
+    return await AnalysisBackfillService().run(
+        body.symbol, body.timeframe, body.start_time, body.end_time, body.limit, body.rebuild
+    )
+
+
+@router.get("/analysis/backfill/status", response_model=AnalysisBackfillStatusOut)
+def analysis_backfill_progress():
+    return backfill_status.report()
+
+
 @router.get("/market-data/status")
 def market_data_status():
     return market_stream.status()
@@ -128,4 +141,3 @@ async def market_websocket(websocket: WebSocket):
         await broadcaster.disconnect(websocket)
     except Exception:
         await broadcaster.disconnect(websocket)
-
