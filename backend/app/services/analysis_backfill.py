@@ -8,7 +8,7 @@ from sqlalchemy import delete, select
 
 from app.core.logging import log_event
 from app.database.session import SessionLocal
-from app.models import AnalysisSnapshot, Candle, FVGZone, MarketStructureEvent, SwingPoint, Symbol
+from app.models import Alert, AnalysisSnapshot, Candle, FVGZone, LiquidityPool, MarketStructureEvent, OrderBlock, SwingPoint, Symbol
 from app.services.broadcast import broadcaster
 from app.services.pipeline import process_closed_candle
 
@@ -90,7 +90,10 @@ class AnalysisBackfillService:
             return model.symbol_id == symbol_id, model.timeframe == timeframe
 
         with self.session_factory.begin() as db:
+            db.execute(delete(Alert).where(*filters(Alert)))
             db.execute(delete(AnalysisSnapshot).where(*filters(AnalysisSnapshot)))
+            db.execute(delete(OrderBlock).where(*filters(OrderBlock)))
+            db.execute(delete(LiquidityPool).where(*filters(LiquidityPool)))
             db.execute(delete(MarketStructureEvent).where(*filters(MarketStructureEvent)))
             db.execute(delete(FVGZone).where(*filters(FVGZone)))
             db.execute(delete(SwingPoint).where(*filters(SwingPoint)))
@@ -108,12 +111,12 @@ class AnalysisBackfillService:
                 for candle_id in candle_ids:
                     if not rebuild:
                         with self.session_factory() as db:
-                            already_analyzed = db.scalar(select(AnalysisSnapshot.id).join(Candle, AnalysisSnapshot.symbol_id == Candle.symbol_id).where(
+                            existing_snapshot = db.scalar(select(AnalysisSnapshot).join(Candle, AnalysisSnapshot.symbol_id == Candle.symbol_id).where(
                                 Candle.id == candle_id,
                                 AnalysisSnapshot.timeframe == timeframe,
                                 AnalysisSnapshot.generated_at == Candle.close_time,
                             ))
-                        if already_analyzed is not None:
+                        if existing_snapshot is not None and existing_snapshot.indicator_values_json.get("_smc_version") == 2:
                             skipped += 1
                             backfill_status.processed_candles += 1
                             continue

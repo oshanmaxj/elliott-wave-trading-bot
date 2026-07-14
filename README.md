@@ -1,4 +1,4 @@
-# Elliott Wave AI Crypto Trading Bot — Phase 1
+# WaveScope Smart Money Concepts Platform — Phase 2
 
 A production-oriented market-data and analysis foundation for Binance USDT perpetual futures. Phase 1 ingests public BTCUSDT and ETHUSDT candles, calculates causal technical indicators, detects confirmed pivots, classifies market structure, identifies BOS/CHoCH and Fair Value Gaps, persists analysis, and streams it to a React dashboard.
 
@@ -89,6 +89,9 @@ docker compose run --rm backend alembic revision --autogenerate -m "describe cha
 | `market_structure_events` | Deduplicated BOS/CHoCH breaks and trend transitions |
 | `fvg_zones` | Three-candle imbalance bounds and mitigation lifecycle |
 | `analysis_snapshots` | Candle-close trend, latest event, indicators and confidence |
+| `liquidity_pools` | Equal-high/equal-low buy-side and sell-side liquidity with sweep state |
+| `order_blocks` | BOS-derived institutional candle zones and mitigation lifecycle |
+| `alerts` | Deduplicated structure, FVG, liquidity-sweep and order-block alerts |
 | `bot_logs` | Structured operational and failure logs |
 | `settings` | Validated runtime detector configuration |
 
@@ -114,6 +117,19 @@ curl http://localhost:8000/api/analysis/backfill/status
 ```
 
 Set `limit` to `null` to process every selected closed candle. `rebuild: true` deletes derived analysis only for the requested symbol/timeframe before chronological replay; candles are never deleted.
+
+## Smart Money Concepts APIs
+
+```text
+GET /api/liquidity?symbol=BTCUSDT&timeframe=1h
+GET /api/order-blocks?symbol=BTCUSDT&timeframe=1h
+GET /api/premium-discount?symbol=BTCUSDT&timeframe=1h
+GET /api/market-bias?symbol=BTCUSDT
+GET /api/structure-score?symbol=BTCUSDT&timeframe=1h
+GET /api/alerts?symbol=BTCUSDT&timeframe=1h
+```
+
+Liquidity tolerance is configurable through `GET/PUT /api/settings`. Phase 2 analysis remains candle-close causal and is included in historical backfill and live WebSocket processing.
 
 ## Local development without Compose
 

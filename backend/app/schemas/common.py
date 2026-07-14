@@ -103,6 +103,69 @@ class AnalysisOut(ORMModel):
     generated_at: datetime
 
 
+class LiquidityOut(ORMModel):
+    id: int
+    symbol_id: int
+    timeframe: str
+    type: str
+    price: Decimal
+    strength: Decimal
+    first_swing_id: int
+    second_swing_id: int
+    detected_at: datetime
+    swept_at: datetime | None
+    metadata_json: dict[str, Any]
+
+
+class OrderBlockOut(ORMModel):
+    id: int
+    symbol_id: int
+    timeframe: str
+    direction: str
+    candle_id: int
+    top_price: Decimal
+    bottom_price: Decimal
+    bos_event_id: int
+    status: str
+    mitigation_percent: Decimal
+    detected_at: datetime
+    first_touched_at: datetime | None
+    fully_mitigated_at: datetime | None
+    invalidated_at: datetime | None
+
+
+class AlertOut(ORMModel):
+    id: int
+    type: str
+    symbol_id: int
+    timeframe: str
+    message: str
+    created_at: datetime
+
+
+class PremiumDiscountOut(BaseModel):
+    swing_high: Decimal
+    swing_low: Decimal
+    equilibrium: Decimal
+    premium: dict[str, Decimal]
+    discount: dict[str, Decimal]
+
+
+class MarketBiasOut(BaseModel):
+    symbol: str
+    timeframes: dict[str, str]
+    score: int
+    label: str
+    aligned: bool
+
+
+class StructureScoreOut(BaseModel):
+    symbol: str
+    timeframe: str
+    score: int
+    label: str
+
+
 class BotLogOut(ORMModel):
     id: int
     level: str
@@ -193,6 +256,7 @@ class RuntimeSettings(BaseModel):
     minimum_fvg_atr_size: float = Field(0.15, ge=0, le=10)
     fvg_volume_confirmation: bool = False
     structure_confidence_threshold: float = Field(0.5, ge=0, le=1)
+    liquidity_tolerance_percentage: float = Field(0.1, ge=0.001, le=5)
 
     @field_validator("enabled_symbols")
     @classmethod

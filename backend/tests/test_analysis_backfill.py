@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.api.routes import router
-from app.models import AnalysisSnapshot, Candle, FVGZone, MarketStructureEvent, SwingPoint
+from app.models import Alert, AnalysisSnapshot, Candle, FVGZone, MarketStructureEvent, OrderBlock, SwingPoint
 from app.repositories.market import ensure_symbol, upsert_candle
 from app.schemas.common import CandleData
 from app.services.analysis_backfill import AnalysisBackfillService, backfill_status
@@ -113,6 +113,8 @@ async def test_historical_replay_creates_swings_fvg_structure_and_snapshots(sess
         assert db.scalar(select(func.count(SwingPoint.id))) >= 2
         assert db.scalar(select(func.count(FVGZone.id))) >= 1
         assert db.scalar(select(func.count(MarketStructureEvent.id))) >= 1
+        assert db.scalar(select(func.count(OrderBlock.id))) >= 1
+        assert db.scalar(select(func.count(Alert.id))) >= 1
         assert db.scalar(select(func.count(AnalysisSnapshot.id))) == len(prices)
 
 

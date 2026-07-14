@@ -1,18 +1,19 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES
 from app.database.session import get_db
 from app.market_data.binance_ws import market_stream
-from app.models import AnalysisSnapshot, BotLog, Candle, FVGZone, MarketStructureEvent, SwingPoint, Symbol
-from app.schemas.common import AnalysisBackfillReport, AnalysisBackfillRequest, AnalysisBackfillStatusOut, AnalysisOut, BotLogOut, CandleOut, FVGOut, RuntimeSettings, StructureOut, SwingOut, SymbolOut, SyncRequest
+from app.models import Alert, AnalysisSnapshot, BotLog, Candle, FVGZone, LiquidityPool, MarketStructureEvent, OrderBlock, SwingPoint, Symbol
+from app.schemas.common import AlertOut, AnalysisBackfillReport, AnalysisBackfillRequest, AnalysisBackfillStatusOut, AnalysisOut, BotLogOut, CandleOut, FVGOut, LiquidityOut, MarketBiasOut, OrderBlockOut, PremiumDiscountOut, RuntimeSettings, StructureOut, StructureScoreOut, SwingOut, SymbolOut, SyncRequest
 from app.services.analysis_backfill import AnalysisBackfillService, backfill_status
 from app.services.broadcast import broadcaster
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
+from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
 
 router = APIRouter(prefix="/api")
 
@@ -84,6 +85,70 @@ def latest_analysis(symbol: str, timeframe: str, db: Session = Depends(get_db)):
     row = db.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.symbol_id == symbol_row.id, AnalysisSnapshot.timeframe == timeframe).order_by(AnalysisSnapshot.generated_at.desc()).limit(1))
     if not row: raise HTTPException(status_code=404, detail="Analysis is not available yet")
     return row
+
+
+@router.get("/liquidity", response_model=list[LiquidityOut])
+def liquidity(symbol: str, timeframe: str, active_only: bool = False, limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db)):
+    symbol_row = resolve_symbol(db, symbol); validate_timeframe(timeframe)
+    query = select(LiquidityPool).where(LiquidityPool.symbol_id == symbol_row.id, LiquidityPool.timeframe == timeframe)
+    if active_only:
+        query = query.where(LiquidityPool.swept_at.is_(None))
+    rows = list(db.scalars(query.order_by(LiquidityPool.detected_at.desc()).limit(limit)))
+    return list(reversed(rows))
+
+
+@router.get("/order-blocks", response_model=list[OrderBlockOut])
+def order_blocks(symbol: str, timeframe: str, block_status: str | None = Query(None, alias="status", pattern="^(active|partially_mitigated|fully_mitigated|invalidated)$"), limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db)):
+    symbol_row = resolve_symbol(db, symbol); validate_timeframe(timeframe)
+    query = select(OrderBlock).where(OrderBlock.symbol_id == symbol_row.id, OrderBlock.timeframe == timeframe)
+    if block_status:
+        query = query.where(OrderBlock.status == block_status)
+    rows = list(db.scalars(query.order_by(OrderBlock.detected_at.desc()).limit(limit)))
+    return list(reversed(rows))
+
+
+@router.get("/premium-discount", response_model=PremiumDiscountOut)
+def premium_discount_zones(symbol: str, timeframe: str, db: Session = Depends(get_db)):
+    symbol_row = resolve_symbol(db, symbol); validate_timeframe(timeframe)
+    swings = list(db.scalars(select(SwingPoint).where(SwingPoint.symbol_id == symbol_row.id, SwingPoint.timeframe == timeframe).order_by(SwingPoint.detected_at, SwingPoint.id)))
+    result = premium_discount(swings)
+    if not result:
+        raise HTTPException(status_code=404, detail="A confirmed swing range is not available yet")
+    return result
+
+
+@router.get("/market-bias", response_model=MarketBiasOut)
+def market_bias(symbol: str, db: Session = Depends(get_db)):
+    symbol_row = resolve_symbol(db, symbol)
+    trends = {}
+    for timeframe in ("4h", "1h", "15m"):
+        snapshot = db.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.symbol_id == symbol_row.id, AnalysisSnapshot.timeframe == timeframe).order_by(AnalysisSnapshot.generated_at.desc()).limit(1))
+        trends[timeframe] = snapshot.trend if snapshot else "undefined"
+    return {"symbol": symbol_row.symbol, **multi_timeframe_bias(trends)}
+
+
+@router.get("/structure-score", response_model=StructureScoreOut)
+def score(symbol: str, timeframe: str, db: Session = Depends(get_db)):
+    symbol_row = resolve_symbol(db, symbol); validate_timeframe(timeframe)
+    snapshot = db.scalar(select(AnalysisSnapshot).where(AnalysisSnapshot.symbol_id == symbol_row.id, AnalysisSnapshot.timeframe == timeframe).order_by(AnalysisSnapshot.generated_at.desc()).limit(1))
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Analysis is not available yet")
+    latest_event = db.scalar(select(MarketStructureEvent).where(MarketStructureEvent.symbol_id == symbol_row.id, MarketStructureEvent.timeframe == timeframe).order_by(MarketStructureEvent.detected_at.desc()).limit(1))
+    liquidity_count = db.scalar(select(func.count(LiquidityPool.id)).where(LiquidityPool.symbol_id == symbol_row.id, LiquidityPool.timeframe == timeframe, LiquidityPool.swept_at.is_(None))) or 0
+    block_count = db.scalar(select(func.count(OrderBlock.id)).where(OrderBlock.symbol_id == symbol_row.id, OrderBlock.timeframe == timeframe, OrderBlock.status.in_(["active", "partially_mitigated"]))) or 0
+    result = structure_score(snapshot.trend, latest_event, liquidity_count, block_count, snapshot.active_fvg_count, snapshot.indicator_values_json)
+    return {"symbol": symbol_row.symbol, "timeframe": timeframe, **result}
+
+
+@router.get("/alerts", response_model=list[AlertOut])
+def alerts(symbol: str | None = None, timeframe: str | None = None, limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
+    query = select(Alert)
+    if symbol:
+        symbol_row = resolve_symbol(db, symbol)
+        query = query.where(Alert.symbol_id == symbol_row.id)
+    if timeframe:
+        query = query.where(Alert.timeframe == validate_timeframe(timeframe))
+    return list(db.scalars(query.order_by(Alert.created_at.desc()).limit(limit)))
 
 
 @router.post("/market-data/sync", status_code=status.HTTP_202_ACCEPTED)

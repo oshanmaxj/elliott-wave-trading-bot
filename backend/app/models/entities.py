@@ -126,6 +126,56 @@ class AnalysisSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class LiquidityPool(Base):
+    __tablename__ = "liquidity_pools"
+    __table_args__ = (UniqueConstraint("type", "first_swing_id", "second_swing_id", name="uq_liquidity_swing_pair"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8), index=True)
+    type: Mapped[str] = mapped_column(String(16), index=True)
+    price: Mapped[Decimal] = mapped_column(price_type)
+    strength: Mapped[Decimal] = mapped_column(Numeric(8, 4))
+    first_swing_id: Mapped[int] = mapped_column(ForeignKey("swing_points.id", ondelete="CASCADE"))
+    second_swing_id: Mapped[int] = mapped_column(ForeignKey("swing_points.id", ondelete="CASCADE"))
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    swept_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OrderBlock(Base):
+    __tablename__ = "order_blocks"
+    __table_args__ = (UniqueConstraint("bos_event_id", name="uq_order_block_bos"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8), index=True)
+    direction: Mapped[str] = mapped_column(String(16), index=True)
+    candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id", ondelete="CASCADE"))
+    top_price: Mapped[Decimal] = mapped_column(price_type)
+    bottom_price: Mapped[Decimal] = mapped_column(price_type)
+    bos_event_id: Mapped[int] = mapped_column(ForeignKey("market_structure_events.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    mitigation_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=0)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    first_touched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fully_mitigated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+    __table_args__ = (UniqueConstraint("type", "source_type", "source_id", name="uq_alert_source"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str] = mapped_column(String(32), index=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8), index=True)
+    message: Mapped[str] = mapped_column(String(500))
+    source_type: Mapped[str] = mapped_column(String(32))
+    source_id: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class BotLog(Base):
     __tablename__ = "bot_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -142,4 +192,3 @@ class Setting(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     key: Mapped[str] = mapped_column(String(64), unique=True)
     value_json: Mapped[Any] = mapped_column(JSON)
-

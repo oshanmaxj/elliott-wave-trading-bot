@@ -1,0 +1,37 @@
+.chart-settings {
+  align-items: center;
+  background: #09101a;
+  border-bottom: 1px solid #1c2837;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 10px 16px;
+}
+
+.chart-settings label {
+  align-items: center;
+  color: #8290a3;
+  display: flex;
+  font: 9px 'DM Mono';
+  gap: 6px;
+}
+
+.chart-settings input { accent-color: #57d7ff; }
+.chart { position: relative; }
+.price-band { border: 1px solid transparent; font: 8px 'DM Mono'; left: 0; opacity: .18; padding: 3px 8px; pointer-events: none; position: absolute; right: 60px; text-align: right; z-index: 1; }
+.price-band.premium { background: #ef5b5b; border-color: #ef5b5b; color: #fff; }
+.price-band.discount { background: #3b82f6; border-color: #57d7ff; color: #fff; }
+.price-band.ob-bullish { background: #20c997; border-color: #20c997; color: #fff; opacity: .12; }
+.price-band.ob-bearish { background: #ef5b5b; border-color: #ef5b5b; color: #fff; opacity: .12; }
+
+.smc-cards { display: grid; gap: 8px; grid-template-columns: repeat(5, 1fr); margin-top: 14px; }
+.bias-detail { color: #8290a3; font: 12px 'DM Mono'; margin: -20px 0 30px; text-transform: capitalize; }
+.status-card.bullish strong { color: #20c997; }
+.status-card.bearish strong { color: #ef5b5b; }
+.status-card.neutral strong { color: #ffcc66; }
+.bias-bullish { box-shadow: inset 3px 0 #20c997; }
+.bias-bearish { box-shadow: inset 3px 0 #ef5b5b; }
+.bias-neutral { box-shadow: inset 3px 0 #ffcc66; }
+
+@media (max-width: 1100px) { .smc-cards { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 760px) { .smc-cards { grid-template-columns: repeat(2, 1fr); } }
