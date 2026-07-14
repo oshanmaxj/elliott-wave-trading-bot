@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+.python/
+.tmp/
+python-installer.exe
+node_modules/
+dist/
+.idea/
+.vscode/
+*.log
