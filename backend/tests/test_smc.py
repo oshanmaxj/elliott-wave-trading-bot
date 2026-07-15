@@ -71,6 +71,10 @@ def test_phase_two_api_endpoints_validate_and_return_empty_state(session_factory
     params = {"symbol": "BTCUSDT", "timeframe": "1h"}
     assert client.get("/api/liquidity", params=params).json() == []
     assert client.get("/api/order-blocks", params=params).json() == []
+    assert client.get("/api/liquidity-sweeps", params=params).json() == []
+    assert client.get("/api/trade-setups", params={"symbol": "BTCUSDT"}).json() == []
+    assert client.get("/api/trade-setups/summary", params={"symbol": "BTCUSDT"}).json()["ready_count"] == 0
+    assert client.post("/api/trade-setups/999/paper-trade").status_code == 404
     assert client.get("/api/alerts", params={"symbol": "BTCUSDT"}).json() == []
     bias = client.get("/api/market-bias", params={"symbol": "BTCUSDT"})
     assert bias.status_code == 200 and bias.json()["label"] == "Neutral / Mixed"

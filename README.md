@@ -1,6 +1,6 @@
-# WaveScope Smart Money Concepts Platform — Phase 2
+# WaveScope Smart Money Concepts + Elliott Wave Platform — Phase 4
 
-A production-oriented market-data and analysis foundation for Binance USDT perpetual futures. Phase 1 ingests public BTCUSDT and ETHUSDT candles, calculates causal technical indicators, detects confirmed pivots, classifies market structure, identifies BOS/CHoCH and Fair Value Gaps, persists analysis, and streams it to a React dashboard.
+A production-oriented, paper-analysis platform for Binance USDT perpetual futures. It ingests public BTCUSDT and ETHUSDT candles, builds causal SMC structure and liquidity context, and deterministically ranks Elliott impulse and zigzag counts from confirmed stored swings.
 
 This release cannot place live orders, withdraw funds, or use authenticated Binance endpoints. It does not request API credentials.
 
@@ -94,6 +94,9 @@ docker compose run --rm backend alembic revision --autogenerate -m "describe cha
 | `alerts` | Deduplicated structure, FVG, liquidity-sweep and order-block alerts |
 | `bot_logs` | Structured operational and failure logs |
 | `settings` | Validated runtime detector configuration |
+| `liquidity_sweeps` / `trade_setups` | Causal sweep lifecycle and paper-only opportunities |
+| `elliott_wave_counts` | Ranked primary, alternate, completed and invalidated deterministic counts |
+| `elliott_wave_points` | Confirmed swing-backed 0–5 and A–C points with Fibonacci ratios and durations |
 
 ## Historical synchronization
 
@@ -130,6 +133,36 @@ GET /api/alerts?symbol=BTCUSDT&timeframe=1h
 ```
 
 Liquidity tolerance is configurable through `GET/PUT /api/settings`. Phase 2 analysis remains candle-close causal and is included in historical backfill and live WebSocket processing.
+
+## Liquidity sweeps and paper setups
+
+WaveScope detects candidate and confirmed liquidity reclaims, failed sweeps, and deterministic paper-analysis setups. No endpoint submits an exchange order.
+
+```text
+GET  /api/liquidity-sweeps
+GET  /api/liquidity-sweeps/{id}
+GET  /api/trade-setups
+GET  /api/trade-setups/summary
+GET  /api/trade-setups/{id}
+POST /api/trade-setups/{id}/reject
+POST /api/trade-setups/{id}/paper-trade  # returns 409 until a paper executor exists
+```
+
+Run migration `0003` before deploying this feature. The current historical replay marker is version 4, and rebuild mode deletes derived sweep/setup/wave records without deleting candles.
+
+## Elliott Wave engine
+
+Run migration `0004` before deploying the Elliott engine. The first release supports bullish/bearish impulses and ABC zigzags, stores multiple valid candidates, enforces hard structural invalidation, and scores Fibonacci, structure, higher-timeframe, liquidity, zone, momentum and freshness confluence. A conflicting 4h direction is penalized; it cannot override a hard rule failure.
+
+```text
+GET  /api/elliott-wave/counts
+GET  /api/elliott-wave/counts/{id}
+GET  /api/elliott-wave/latest?symbol=BTCUSDT&timeframe=1h
+GET  /api/elliott-wave/context?symbol=BTCUSDT
+POST /api/elliott-wave/recalculate
+```
+
+`POST /api/elliott-wave/recalculate` accepts `{"symbol":"BTCUSDT","timeframe":"1h","rebuild":false}`. Replay only exposes swings after their stored confirmation time, preventing future pivots from leaking into historical counts. Wave-derived paper setups reference `elliott_wave_count_id`; no endpoint can submit a live order.
 
 ## Local development without Compose
 
@@ -198,18 +231,19 @@ Validate the Compose file with `docker compose config`.
 - **CORS errors in local development:** set `FRONTEND_URL` to the exact browser origin and restart the backend.
 - **Resetting development state:** `docker compose down -v` removes both database and Redis volumes; this is destructive.
 
-## Known Phase 1 limitations
+## Known limitations
 
-- Elliott Wave degree labeling, wave-count alternatives, and AI scoring are not yet implemented; Phase 1 supplies the clean structure primitives they depend on.
+- The initial Elliott pattern library covers standard impulses and ABC zigzags. Diagonals, flats, expanded flats and triangles are schema-ready but remain a later engine extension.
+- Wave confidence is a deterministic confluence score, not a trained probability or profit guarantee.
 - There is no order simulator, portfolio ledger, strategy executor, or live trading capability.
 - Runtime symbol/timeframe changes affect analytical settings immediately, while changing upstream stream subscriptions requires a backend restart and environment update.
 - The in-process WebSocket broadcaster is suitable for one backend replica. Redis-backed pub/sub is needed before horizontal scaling.
 - FVG bounds are rendered as dashed horizontal zone boundaries rather than filled chart primitives.
-- Structure confidence is deterministic in Phase 1 and is not a trained probability.
+- Wave-5 setups expose a reduced risk factor for a future paper position-sizing ledger; this phase does not size positions.
 
-## Recommended Phase 2
+## Recommended next phase
 
-1. Add multi-degree Elliott Wave candidate generation, invalidation rules, Fibonacci confluence, and alternate counts.
+1. Extend the deterministic pattern library with diagonals, flats, expanded flats and triangles.
 2. Add Redis pub/sub and a dedicated durable worker queue for horizontally scalable candle-close processing.
 3. Build a paper-trading ledger, fills/slippage model, portfolio accounting, position sizing, and drawdown controls.
 4. Add multi-timeframe setup ranking using 4h bias, 1h structure, and 15m confirmation.

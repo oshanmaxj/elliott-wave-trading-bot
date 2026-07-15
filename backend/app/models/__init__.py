@@ -3,13 +3,17 @@ from app.models.entities import (
     Alert,
     BotLog,
     Candle,
+    ElliottWaveCount,
+    ElliottWavePoint,
     FVGZone,
     LiquidityPool,
+    LiquiditySweep,
     MarketStructureEvent,
     OrderBlock,
     Setting,
     SwingPoint,
     Symbol,
+    TradeSetup,
 )
 
-__all__ = ["Symbol", "Candle", "SwingPoint", "MarketStructureEvent", "FVGZone", "AnalysisSnapshot", "LiquidityPool", "OrderBlock", "Alert", "BotLog", "Setting"]
+__all__ = ["Symbol", "Candle", "SwingPoint", "MarketStructureEvent", "FVGZone", "AnalysisSnapshot", "LiquidityPool", "LiquiditySweep", "OrderBlock", "TradeSetup", "ElliottWaveCount", "ElliottWavePoint", "Alert", "BotLog", "Setting"]
