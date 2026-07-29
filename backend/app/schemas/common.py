@@ -425,3 +425,31 @@ class RuntimeSettings(BaseModel):
         if not values or not set(values) <= SUPPORTED_TIMEFRAMES:
             raise ValueError("unsupported timeframe")
         return values
+
+
+class BacktestRequest(BaseModel):
+    symbol: str
+    timeframe: str
+    strategy: str = "ALL"
+    start_time: datetime
+    end_time: datetime
+    starting_balance: Decimal = Field(Decimal("10000"), gt=0)
+    risk_per_trade_pct: Decimal = Field(Decimal("1"), gt=0, le=5)
+    maker_fee_pct: Decimal = Field(Decimal("0.02"), ge=0)
+    taker_fee_pct: Decimal = Field(Decimal("0.05"), ge=0)
+    slippage_bps: Decimal = Field(Decimal("2"), ge=0)
+    same_candle_policy: str = Field("stop_first", pattern="^(stop_first|target_first|skip_ambiguous)$")
+
+
+class PaperAccountRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    starting_balance: Decimal = Field(Decimal("10000"), gt=0)
+    risk_per_trade_pct: Decimal = Field(Decimal("1"), gt=0, le=5)
+    max_daily_loss_pct: Decimal = Field(Decimal("3"), gt=0, le=100)
+
+
+class PaperTradeRequest(BaseModel):
+    account_id: int
+    max_risk_per_trade_pct: Decimal = Field(Decimal("1"), gt=0, le=5)
+    slippage_bps: Decimal = Field(Decimal("2"), ge=0)
+    taker_fee_pct: Decimal = Field(Decimal("0.05"), ge=0)

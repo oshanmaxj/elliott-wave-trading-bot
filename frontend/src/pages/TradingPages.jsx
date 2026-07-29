@@ -1,0 +1,31 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api'
+
+const money = value => `$${Number(value || 0).toLocaleString(undefined,{maximumFractionDigits:2})}`
+const Metrics = ({items}) => <div className="summary-grid">{items.map(([label,value])=><div className="metric" key={label}><span>{label}</span><strong>{value ?? '—'}</strong></div>)}</div>
+const TradeTable=({rows})=><section className="panel"><div className="panel-title">Trades</div><div className="table-wrap"><table><thead><tr><th>Entry</th><th>Direction</th><th>Exit</th><th>Reason</th><th>PnL</th><th>R</th></tr></thead><tbody>{rows.map(x=><tr key={x.id}><td>{new Date(x.entry_time).toLocaleString()}</td><td>{x.direction}</td><td>{x.exit_price}</td><td>{x.exit_reason}</td><td>{money(x.realized_pnl)}</td><td>{Number(x.realized_r).toFixed(2)}</td></tr>)}</tbody></table></div></section>
+
+export function Backtests(){
+  const [form,setForm]=useState({symbol:'BTCUSDT',timeframe:'1h',strategy:'ALL',start_time:'2025-01-01T00:00',end_time:'2025-12-31T00:00',starting_balance:10000,risk_per_trade_pct:1,taker_fee_pct:.05,slippage_bps:2,same_candle_policy:'stop_first'})
+  const [runs,setRuns]=useState([]),[selected,setSelected]=useState(null),[trades,setTrades]=useState([]),[busy,setBusy]=useState(false),[error,setError]=useState('')
+  const load=()=>api.get('/backtests').then(r=>setRuns(r.data))
+  useEffect(()=>{load()},[])
+  const run=async()=>{setBusy(true);setError('');try{const {data}=await api.post('/backtests',{...form,start_time:new Date(form.start_time).toISOString(),end_time:new Date(form.end_time).toISOString()});setSelected(data);setTrades((await api.get(`/backtests/${data.id}/trades`)).data);load()}catch(e){setError(typeof e.response?.data?.detail==='string'?e.response.data.detail:e.message)}finally{setBusy(false)}}
+  const show=async item=>{setSelected(item);setTrades((await api.get(`/backtests/${item.id}/trades`)).data)}
+  return <div><div className="page-head"><div><p className="eyebrow">DETERMINISTIC REPLAY</p><h1>Backtests</h1><p className="subhead">Closed-candle, no-look-ahead simulation with explicit costs.</p></div></div>
+    {error&&<div className="alert">{error}</div>}<section className="panel trading-form">{['symbol','timeframe','strategy','start_time','end_time','starting_balance','risk_per_trade_pct','taker_fee_pct','slippage_bps'].map(k=><label key={k}><span>{k.replaceAll('_',' ')}</span><input type={k.includes('time')&&k!=='timeframe'?'datetime-local':k.includes('balance')||k.includes('pct')||k.includes('bps')?'number':'text'} value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})}/></label>)}<button onClick={run} disabled={busy}>{busy?'Running…':'Run Backtest'}</button></section>
+    {selected&&<><Metrics items={[['Net PnL',money(selected.net_profit)],['Win Rate',`${Number(selected.win_rate).toFixed(1)}%`],['Profit Factor',selected.profit_factor?Number(selected.profit_factor).toFixed(2):'—'],['Expectancy',Number(selected.expectancy).toFixed(2)+' R'],['Average R',Number(selected.average_rr).toFixed(2)],['Max Drawdown',Number(selected.max_drawdown_pct).toFixed(2)+'%'],['Total Trades',selected.trades_taken]]}/><section className="panel"><div className="panel-title">Equity / drawdown curve</div><div className="equity-bars">{(selected.settings_json?.equity_curve||[]).map(x=><i key={x.index} style={{height:`${20+Math.max(0,80-x.drawdown_pct*4)}%`}} title={`${money(x.equity)} / DD ${x.drawdown_pct.toFixed(2)}%`}/>)}</div></section><TradeTable rows={trades}/></>}
+    <section className="panel"><div className="panel-title">Recent runs</div><div className="table-wrap"><table><thead><tr><th>ID</th><th>Strategy</th><th>Timeframe</th><th>Net PnL</th><th>Status</th></tr></thead><tbody>{runs.map(x=><tr key={x.id} onClick={()=>show(x)}><td>{x.id}</td><td>{x.strategy}</td><td>{x.timeframe}</td><td>{money(x.net_profit)}</td><td>{x.status}</td></tr>)}</tbody></table></div></section></div>
+}
+
+export function PaperTrading(){
+  const [accounts,setAccounts]=useState([]),[positions,setPositions]=useState([])
+  useEffect(()=>{Promise.all([api.get('/paper/accounts'),api.get('/paper/positions')]).then(([a,p])=>{setAccounts(a.data);setPositions(p.data)})},[])
+  const account=accounts[0]
+  return <div><div className="paper-banner">PAPER TRADING ONLY · NO LIVE FUNDS</div><div className="page-head"><div><p className="eyebrow">SIMULATED EXECUTION</p><h1>Paper Trading</h1></div></div><Metrics items={[['Balance',money(account?.balance)],['Equity',money(account?.equity)],['Realized PnL',money(account?.realized_pnl)],['Unrealized PnL',money(account?.unrealized_pnl)],['Current Drawdown',`${Number(account?.drawdown_pct||0).toFixed(2)}%`]]}/><section className="panel"><div className="panel-title">Positions</div><div className="table-wrap"><table><thead><tr><th>Status</th><th>Direction</th><th>Entry</th><th>SL</th><th>TP1</th><th>TP2</th><th>TP3</th><th>PnL</th></tr></thead><tbody>{positions.map(x=><tr key={x.id}><td>{x.status}</td><td>{x.direction}</td><td>{x.entry_price}</td><td>{x.stop_loss}</td><td>{x.tp1}</td><td>{x.tp2}</td><td>{x.tp3}</td><td>{money(x.realized_pnl)}</td></tr>)}</tbody></table></div></section></div>
+}
+export function Performance(){
+  const [data,setData]=useState({})
+  useEffect(()=>{api.get('/paper/performance').then(r=>setData(r.data))},[])
+  return <div><div className="page-head"><div><p className="eyebrow">STRATEGY OBSERVATORY</p><h1>Performance</h1><p className="subhead">Paper results; grouped views populate as execution history grows.</p></div></div><Metrics items={[['Total Trades',data.total_trades],['Wins',data.wins],['Losses',data.losses],['Win Rate',`${Number(data.win_rate||0).toFixed(1)}%`],['Net PnL',money(data.net_pnl)],['Profit Factor',data.profit_factor?Number(data.profit_factor).toFixed(2):'—']]}/><section className="panel empty">Strategy, timeframe, direction, Elliott wave, and confidence breakdowns appear after closed paper trades are available.</section></div>
+}

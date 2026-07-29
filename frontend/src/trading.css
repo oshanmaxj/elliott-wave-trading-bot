@@ -1,0 +1,10 @@
+.trading-form{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:14px;padding:20px;margin-bottom:18px}
+.trading-form label{display:grid;gap:7px;color:#76869a;font:10px 'DM Mono';text-transform:uppercase}
+.trading-form button,.clean-button{border:0;background:#57d7ff;color:#071018;font-weight:700;padding:10px 15px;cursor:pointer}
+.trading-form button{align-self:end;height:39px}.trading-form button:disabled{opacity:.5}
+.clean-button{padding:5px 9px;margin-right:12px;font-size:10px}.panel-title>div{display:flex;align-items:center}
+.paper-banner{background:#2c2110;border:1px solid #8f6b22;color:#ffd56a;padding:12px 16px;margin-bottom:20px;font:600 12px 'DM Mono';letter-spacing:.1em;text-align:center}
+.equity-bars{height:180px;display:flex;align-items:end;gap:2px;padding:20px}.equity-bars i{display:block;flex:1;min-width:2px;background:#57d7ff;opacity:.75}
+.panel+.panel,.summary-grid+.panel{margin-top:14px}
+@media(max-width:1100px){.trading-form{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:760px){.trading-form{grid-template-columns:1fr 1fr}}

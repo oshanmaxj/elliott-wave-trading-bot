@@ -31,6 +31,7 @@ from app.services.broadcast import broadcaster
 from app.services.settings import get_runtime_settings
 from app.structure.engine import classify_trend, detect_structure_break
 from app.structure.swings import detect_confirmed_pivot
+from app.trading.paper import process_paper_candle
 
 
 def serialize(row) -> dict:
@@ -842,6 +843,8 @@ async def process_closed_candle(
                 setup.id,
                 candle.close_time,
             )
+        for paper_position in process_paper_candle(db, candle):
+            events.append(("paper_position_updated", serialize(paper_position)))
         trend = classify_trend(swings)
         latest_event = db.scalar(
             select(MarketStructureEvent)

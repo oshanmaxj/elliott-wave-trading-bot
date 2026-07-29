@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import (
     APIRouter,
@@ -30,6 +31,10 @@ from app.models import (
     SwingPoint,
     Symbol,
     TradeSetup,
+    BacktestRun,
+    BacktestTrade,
+    PaperAccount,
+    PaperPosition,
 )
 from app.schemas.common import (
     AlertOut,
@@ -55,12 +60,18 @@ from app.schemas.common import (
     SyncRequest,
     TradeSetupOut,
     TradeSetupSummary,
+    BacktestRequest,
+    PaperAccountRequest,
+    PaperTradeRequest,
 )
 from app.services.analysis_backfill import AnalysisBackfillService, backfill_status
 from app.services.broadcast import broadcaster
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
+from app.trading.backtest import run_backtest
+from app.trading.execution import execution_fee, position_size, slipped_price
+from app.trading.validation import validate_setup
 
 router = APIRouter(prefix="/api")
 
@@ -484,13 +495,121 @@ def reject_trade_setup(setup_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/trade-setups/{setup_id}/paper-trade")
-def paper_trade_setup(setup_id: int, db: Session = Depends(get_db)):
-    if not db.get(TradeSetup, setup_id):
+def paper_trade_setup(setup_id: int, body: PaperTradeRequest | None = None, db: Session = Depends(get_db)):
+    setup = db.get(TradeSetup, setup_id)
+    if not setup:
         raise HTTPException(status_code=404, detail="Trade setup not found")
-    raise HTTPException(
-        status_code=409,
-        detail="Paper execution module is not installed; no order was submitted",
+    if body is None:
+        raise HTTPException(status_code=422, detail="Paper account and execution settings are required")
+    account = db.get(PaperAccount, body.account_id)
+    if not account or not account.is_active:
+        raise HTTPException(status_code=404, detail="Active paper account not found")
+    validation = validate_setup(setup)
+    if setup.status != "ready" or not validation.valid:
+        raise HTTPException(status_code=409, detail={"message": "Setup is not eligible for paper execution", "reasons": validation.reasons})
+    if db.scalar(select(PaperPosition).where(PaperPosition.trade_setup_id == setup.id, PaperPosition.status.in_(["pending", "open", "partially_closed"]))):
+        raise HTTPException(status_code=409, detail="Setup already has an active paper position")
+    risk_amount, quantity = position_size(account.equity, account.risk_per_trade_pct, setup.preferred_entry, setup.stop_loss, body.max_risk_per_trade_pct)
+    entry = slipped_price(setup.preferred_entry, setup.direction, body.slippage_bps, True)
+    fee = execution_fee(entry, quantity, body.taker_fee_pct)
+    position = PaperPosition(
+        account_id=account.id, trade_setup_id=setup.id, symbol_id=setup.symbol_id,
+        direction=setup.direction, status="pending", entry_price=entry, quantity=quantity,
+        stop_loss=setup.stop_loss, tp1=setup.take_profit_1, tp2=setup.take_profit_2,
+        tp3=setup.take_profit_3, realized_pnl=0, realized_r=0, fees=fee,
+        slippage=abs(entry - setup.preferred_entry) * quantity,
     )
+    db.add(position)
+    setup.status = "paper_traded"
+    db.commit()
+    db.refresh(position)
+    return {"position": position, "risk_amount": risk_amount, "paper_only": True}
+
+
+@router.post("/backtests")
+def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
+    symbol = resolve_symbol(db, body.symbol)
+    validate_timeframe(body.timeframe)
+    if body.start_time >= body.end_time:
+        raise HTTPException(status_code=422, detail="start_time must be before end_time")
+    run = BacktestRun(
+        symbol_id=symbol.id, timeframe=body.timeframe, strategy=body.strategy,
+        start_time=body.start_time, end_time=body.end_time,
+        starting_balance=body.starting_balance, risk_per_trade_pct=body.risk_per_trade_pct,
+        status="pending", settings_json={
+            "maker_fee_pct": str(body.maker_fee_pct), "taker_fee_pct": str(body.taker_fee_pct),
+            "slippage_bps": str(body.slippage_bps), "same_candle_policy": body.same_candle_policy,
+        },
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run_backtest(db, run)
+
+
+@router.get("/backtests")
+def list_backtests(db: Session = Depends(get_db)):
+    return list(db.scalars(select(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(100)))
+
+
+@router.get("/backtests/{run_id}")
+def backtest_detail(run_id: int, db: Session = Depends(get_db)):
+    row = db.get(BacktestRun, run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Backtest not found")
+    return row
+
+
+@router.get("/backtests/{run_id}/trades")
+def backtest_trades(run_id: int, db: Session = Depends(get_db)):
+    return list(db.scalars(select(BacktestTrade).where(BacktestTrade.backtest_run_id == run_id).order_by(BacktestTrade.entry_time)))
+
+
+@router.get("/backtests/{run_id}/equity")
+def backtest_equity(run_id: int, db: Session = Depends(get_db)):
+    row = db.get(BacktestRun, run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Backtest not found")
+    return row.settings_json.get("equity_curve", [])
+
+
+@router.get("/paper/accounts")
+def paper_accounts(db: Session = Depends(get_db)):
+    return list(db.scalars(select(PaperAccount).order_by(PaperAccount.created_at)))
+
+
+@router.post("/paper/accounts")
+def create_paper_account(body: PaperAccountRequest, db: Session = Depends(get_db)):
+    account = PaperAccount(
+        name=body.name, starting_balance=body.starting_balance, balance=body.starting_balance,
+        equity=body.starting_balance, realized_pnl=0, unrealized_pnl=0,
+        max_equity=body.starting_balance, drawdown_pct=0,
+        risk_per_trade_pct=body.risk_per_trade_pct, max_daily_loss_pct=body.max_daily_loss_pct,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+@router.get("/paper/positions")
+def paper_positions(account_id: int | None = None, db: Session = Depends(get_db)):
+    query = select(PaperPosition)
+    if account_id:
+        query = query.where(PaperPosition.account_id == account_id)
+    return list(db.scalars(query.order_by(PaperPosition.created_at.desc()).limit(500)))
+
+
+@router.get("/paper/performance")
+def paper_performance(account_id: int | None = None, db: Session = Depends(get_db)):
+    query = select(PaperPosition).where(PaperPosition.status.in_(["closed", "stopped"]))
+    if account_id:
+        query = query.where(PaperPosition.account_id == account_id)
+    rows = list(db.scalars(query))
+    wins = sum(1 for row in rows if row.realized_pnl > 0)
+    gross_profit = sum((row.realized_pnl for row in rows if row.realized_pnl > 0), Decimal("0"))
+    gross_loss = abs(sum((row.realized_pnl for row in rows if row.realized_pnl < 0), Decimal("0")))
+    return {"total_trades": len(rows), "wins": wins, "losses": len(rows) - wins, "win_rate": wins * 100 / len(rows) if rows else 0, "net_pnl": gross_profit - gross_loss, "profit_factor": gross_profit / gross_loss if gross_loss else None, "paper_only": True}
 
 
 @router.get("/elliott-wave/counts", response_model=list[ElliottWaveCountOut])
