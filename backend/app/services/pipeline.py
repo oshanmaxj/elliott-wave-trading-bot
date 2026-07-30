@@ -10,6 +10,7 @@ from app.elliott.setups import select_wave_strategy
 from app.models import (
     Alert,
     AnalysisSnapshot,
+    BotLog,
     Candle,
     FVGZone,
     LiquidityPool,
@@ -77,6 +78,27 @@ def add_alert(
     db.flush()
     events.append(("alert", serialize(alert)))
     return alert
+
+
+def log_setup_decision(db, setup: TradeSetup) -> None:
+    generated = BotLog(
+        level="INFO", service="analysis", event_type="setup_generated",
+        message=f"Setup {setup.id} generated",
+        context_json={
+            "trade_setup_id": setup.id, "structure_event_id": setup.structure_event_id,
+            "symbol_id": setup.symbol_id, "status": setup.status,
+        },
+    )
+    db.add(generated)
+    event_type = "setup_rejected" if setup.status == "rejected" else "setup_ready"
+    db.add(BotLog(
+        level="INFO", service="analysis", event_type=event_type,
+        message=f"Setup {setup.id} {setup.status}",
+        context_json={
+            "trade_setup_id": setup.id, "structure_event_id": setup.structure_event_id,
+            "rejection_reasons": setup.rejection_reasons_json,
+        },
+    ))
 
 
 async def process_closed_candle(
@@ -650,6 +672,7 @@ async def process_closed_candle(
                     db.add(setup)
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
+                    log_setup_decision(db, setup)
                     if setup.status == "ready":
                         events.append(("trade_setup_ready", serialize(setup)))
                         add_alert(
@@ -797,6 +820,7 @@ async def process_closed_candle(
                     db.add(setup)
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
+                    log_setup_decision(db, setup)
         live_setups = list(
             db.scalars(
                 select(TradeSetup).where(

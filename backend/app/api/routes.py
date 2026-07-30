@@ -62,6 +62,8 @@ from app.schemas.common import (
     TradeSetupSummary,
     BacktestRequest,
     PaperAccountRequest,
+    PaperAccountResetRequest,
+    PaperCloseRequest,
     PaperTradeRequest,
 )
 from app.services.analysis_backfill import AnalysisBackfillService, backfill_status
@@ -71,6 +73,8 @@ from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
 from app.trading.backtest import CandleCoverageError, run_backtest
 from app.trading.execution import execution_fee, position_size, slipped_price
+from app.trading.metrics import calculate_metrics
+from app.trading.paper import manual_close
 from app.trading.validation import validate_setup
 
 router = APIRouter(prefix="/api")
@@ -420,7 +424,7 @@ def trade_setups(
     setup_status: str | None = Query(
         None,
         alias="status",
-        pattern="^(watching|ready|triggered|rejected|expired|invalidated|paper_traded)$",
+        pattern="^(candidate|watching|ready|waiting_entry|triggered|rejected|expired|invalidated|cancelled|paper_traded)$",
     ),
     minimum_confidence: float = Query(0, ge=0, le=100),
     limit: int = Query(200, ge=1, le=1000),
@@ -469,12 +473,47 @@ def trade_setup_summary(symbol: str, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/trade-setups/{setup_id}", response_model=TradeSetupOut)
+@router.get("/trade-setups/{setup_id}")
 def trade_setup_detail(setup_id: int, db: Session = Depends(get_db)):
     row = db.get(TradeSetup, setup_id)
     if not row:
         raise HTTPException(status_code=404, detail="Trade setup not found")
-    return row
+    symbol = db.get(Symbol, row.symbol_id)
+    structure = db.get(MarketStructureEvent, row.structure_event_id)
+    sweep = db.get(LiquiditySweep, row.liquidity_sweep_id) if row.liquidity_sweep_id else None
+    pool = db.get(LiquidityPool, sweep.liquidity_pool_id) if sweep else None
+    fvg = db.get(FVGZone, row.fvg_zone_id) if row.fvg_zone_id else None
+    block = db.get(OrderBlock, row.order_block_id) if row.order_block_id else None
+    wave = db.get(ElliottWaveCount, row.elliott_wave_count_id) if row.elliott_wave_count_id else None
+    runtime = get_runtime_settings(db)
+    minimum_confidence = (
+        runtime.counter_trend_minimum_confidence
+        if row.setup_conditions_json.get("counter_trend")
+        else runtime.minimum_setup_confidence
+    )
+    validation = validate_setup(row, Decimal(str(runtime.minimum_reward_to_risk)))
+    checks = [
+        {"rule": "Market bias alignment", "status": "FAIL" if row.setup_conditions_json.get("counter_trend") else "PASS", "actual": row.setup_conditions_json.get("counter_trend"), "required": False},
+        {"rule": "HTF alignment", "status": "FAIL" if row.setup_conditions_json.get("counter_trend") and not runtime.counter_trend_setups_enabled else "PASS", "actual": row.setup_conditions_json.get("counter_trend"), "required": "aligned or counter-trend enabled"},
+        {"rule": "Structure confirmation", "status": "PASS" if structure and structure.direction == row.direction else "FAIL", "actual": structure.event_type if structure else None, "required": "BOS/CHoCH aligned"},
+        {"rule": "Liquidity confirmation", "status": "PASS" if sweep and sweep.status == "confirmed" else ("NOT APPLICABLE" if row.setup_conditions_json.get("stop_source") != "sweep" else "FAIL"), "actual": sweep.status if sweep else None, "required": "confirmed when required"},
+        {"rule": "Elliott confirmation", "status": "PASS" if wave and not wave.rules_failed_json else ("NOT APPLICABLE" if not wave else "FAIL"), "actual": wave.confidence_score if wave else None, "required": runtime.elliott_minimum_confidence},
+        {"rule": "Confidence", "status": "PASS" if row.confidence_score >= minimum_confidence else "FAIL", "actual": row.confidence_score, "required": minimum_confidence},
+        {"rule": "Risk Reward", "status": "PASS" if validation.valid or "invalid_rr" not in validation.reasons else "FAIL", "actual": row.risk_reward_2, "required": runtime.minimum_reward_to_risk},
+    ]
+    return {
+        "setup": row, "symbol": symbol.symbol, "market_bias": {
+            "higher_timeframe": row.higher_timeframe,
+            "counter_trend": row.setup_conditions_json.get("counter_trend"),
+        },
+        "structure": structure, "elliott": wave, "liquidity_sweep": sweep,
+        "liquidity_pool": pool, "fvg": fvg, "order_block": block,
+        "validation": {
+            "valid": not row.rejection_reasons_json and validation.valid,
+            "checklist": checks,
+            "rejection_reasons": row.rejection_reasons_json or validation.reasons,
+        },
+    }
 
 
 @router.post("/trade-setups/{setup_id}/reject", response_model=TradeSetupOut)
@@ -507,20 +546,28 @@ def paper_trade_setup(setup_id: int, body: PaperTradeRequest | None = None, db: 
     validation = validate_setup(setup)
     if setup.status != "ready" or not validation.valid:
         raise HTTPException(status_code=409, detail={"message": "Setup is not eligible for paper execution", "reasons": validation.reasons})
-    if db.scalar(select(PaperPosition).where(PaperPosition.trade_setup_id == setup.id, PaperPosition.status.in_(["pending", "open", "partially_closed"]))):
+    if db.scalar(select(PaperPosition).where(PaperPosition.trade_setup_id == setup.id, PaperPosition.status.in_(["waiting_entry", "pending", "open", "partially_closed"]))):
         raise HTTPException(status_code=409, detail="Setup already has an active paper position")
     risk_amount, quantity = position_size(account.equity, account.risk_per_trade_pct, setup.preferred_entry, setup.stop_loss, body.max_risk_per_trade_pct)
     entry = slipped_price(setup.preferred_entry, setup.direction, body.slippage_bps, True)
     fee = execution_fee(entry, quantity, body.taker_fee_pct)
     position = PaperPosition(
         account_id=account.id, trade_setup_id=setup.id, symbol_id=setup.symbol_id,
-        direction=setup.direction, status="pending", entry_price=entry, quantity=quantity,
+        direction=setup.direction, status="waiting_entry", entry_price=entry, quantity=quantity,
+        initial_quantity=quantity, risk_amount=risk_amount,
         stop_loss=setup.stop_loss, tp1=setup.take_profit_1, tp2=setup.take_profit_2,
         tp3=setup.take_profit_3, realized_pnl=0, realized_r=0, fees=fee,
         slippage=abs(entry - setup.preferred_entry) * quantity,
+        taker_fee_pct=body.taker_fee_pct, slippage_bps=body.slippage_bps,
     )
     db.add(position)
-    setup.status = "paper_traded"
+    setup.status = "waiting_entry"
+    db.flush()
+    db.add(BotLog(
+        level="INFO", service="paper", event_type="setup_ready",
+        message=f"Setup {setup.id} queued for paper entry",
+        context_json={"trade_setup_id": setup.id, "paper_position_id": position.id, "account_id": account.id},
+    ))
     db.commit()
     db.refresh(position)
     return {"position": position, "risk_amount": risk_amount, "paper_only": True}
@@ -581,7 +628,38 @@ def backtest_equity(run_id: int, db: Session = Depends(get_db)):
 
 @router.get("/paper/accounts")
 def paper_accounts(db: Session = Depends(get_db)):
-    return list(db.scalars(select(PaperAccount).order_by(PaperAccount.created_at)))
+    rows = list(db.scalars(select(PaperAccount).order_by(PaperAccount.created_at)))
+    if not rows:
+        account = PaperAccount(
+            name="Default Paper Account", starting_balance=10000, balance=10000,
+            equity=10000, realized_pnl=0, unrealized_pnl=0, max_equity=10000,
+            drawdown_pct=0, risk_per_trade_pct=1, max_daily_loss_pct=3,
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+        rows = [account]
+    for account in rows:
+        unrealized = Decimal("0")
+        positions = list(db.scalars(select(PaperPosition).where(
+            PaperPosition.account_id == account.id,
+            PaperPosition.status.in_(["open", "partially_closed"]),
+        )))
+        for position in positions:
+            latest = db.scalar(select(Candle).where(
+                Candle.symbol_id == position.symbol_id, Candle.is_closed.is_(True),
+            ).order_by(Candle.close_time.desc()).limit(1))
+            if latest:
+                move = (
+                    Decimal(latest.close) - Decimal(position.entry_price)
+                    if position.direction == "bullish"
+                    else Decimal(position.entry_price) - Decimal(latest.close)
+                )
+                unrealized += move * Decimal(position.quantity)
+        account.unrealized_pnl = unrealized
+        account.equity = account.balance + unrealized
+    db.commit()
+    return rows
 
 
 @router.post("/paper/accounts")
@@ -598,6 +676,26 @@ def create_paper_account(body: PaperAccountRequest, db: Session = Depends(get_db
     return account
 
 
+@router.post("/paper/accounts/{account_id}/reset")
+def reset_paper_account(
+    account_id: int, body: PaperAccountResetRequest, db: Session = Depends(get_db)
+):
+    account = db.get(PaperAccount, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Paper account not found")
+    active = db.scalar(select(func.count(PaperPosition.id)).where(
+        PaperPosition.account_id == account_id,
+        PaperPosition.status.in_(["waiting_entry", "pending", "open", "partially_closed"]),
+    )) or 0
+    if active:
+        raise HTTPException(status_code=409, detail="Close or cancel active paper positions before reset")
+    account.starting_balance = account.balance = account.equity = account.max_equity = body.starting_balance
+    account.realized_pnl = account.unrealized_pnl = account.drawdown_pct = 0
+    db.commit()
+    db.refresh(account)
+    return account
+
+
 @router.get("/paper/positions")
 def paper_positions(account_id: int | None = None, db: Session = Depends(get_db)):
     query = select(PaperPosition)
@@ -606,16 +704,86 @@ def paper_positions(account_id: int | None = None, db: Session = Depends(get_db)
     return list(db.scalars(query.order_by(PaperPosition.created_at.desc()).limit(500)))
 
 
+@router.post("/paper/positions/{position_id}/close")
+def close_paper_position(
+    position_id: int, body: PaperCloseRequest | None = None, db: Session = Depends(get_db)
+):
+    position = db.get(PaperPosition, position_id)
+    if not position:
+        raise HTTPException(status_code=404, detail="Paper position not found")
+    if position.status not in {"open", "partially_closed"}:
+        raise HTTPException(status_code=409, detail="Only open paper positions can be closed")
+    latest = db.scalar(select(Candle).where(
+        Candle.symbol_id == position.symbol_id, Candle.is_closed.is_(True),
+    ).order_by(Candle.close_time.desc()).limit(1))
+    if not latest:
+        raise HTTPException(status_code=409, detail="No closed market price is available")
+    manual_close(db, position, Decimal(latest.close), latest.close_time, body.slippage_bps if body else None)
+    db.commit()
+    db.refresh(position)
+    return position
+
+
+@router.post("/paper/positions/{position_id}/cancel")
+def cancel_paper_position(position_id: int, db: Session = Depends(get_db)):
+    position = db.get(PaperPosition, position_id)
+    if not position:
+        raise HTTPException(status_code=404, detail="Paper position not found")
+    if position.status not in {"waiting_entry", "pending"}:
+        raise HTTPException(status_code=409, detail="Only waiting paper positions can be cancelled")
+    position.status, position.exit_reason = "cancelled", "manual_cancel"
+    setup = db.get(TradeSetup, position.trade_setup_id)
+    if setup:
+        setup.status = "cancelled"
+    db.add(BotLog(
+        level="INFO", service="paper", event_type="paper_position_closed",
+        message=f"Waiting paper position {position.id} cancelled",
+        context_json={"paper_position_id": position.id, "trade_setup_id": position.trade_setup_id, "reason": "cancelled"},
+    ))
+    db.commit()
+    db.refresh(position)
+    return position
+
+
 @router.get("/paper/performance")
 def paper_performance(account_id: int | None = None, db: Session = Depends(get_db)):
     query = select(PaperPosition).where(PaperPosition.status.in_(["closed", "stopped"]))
     if account_id:
         query = query.where(PaperPosition.account_id == account_id)
     rows = list(db.scalars(query))
-    wins = sum(1 for row in rows if row.realized_pnl > 0)
-    gross_profit = sum((row.realized_pnl for row in rows if row.realized_pnl > 0), Decimal("0"))
-    gross_loss = abs(sum((row.realized_pnl for row in rows if row.realized_pnl < 0), Decimal("0")))
-    return {"total_trades": len(rows), "wins": wins, "losses": len(rows) - wins, "win_rate": wins * 100 / len(rows) if rows else 0, "net_pnl": gross_profit - gross_loss, "profit_factor": gross_profit / gross_loss if gross_loss else None, "paper_only": True}
+    pnls = [Decimal(row.realized_pnl) for row in rows]
+    rs = [Decimal(row.realized_r) for row in rows]
+    account = db.get(PaperAccount, account_id) if account_id else None
+    starting = Decimal(account.starting_balance) if account else Decimal("10000")
+    metrics = calculate_metrics(pnls, rs, starting)
+    def grouped(key):
+        groups = {}
+        for position in rows:
+            setup = db.get(TradeSetup, position.trade_setup_id)
+            symbol = db.get(Symbol, position.symbol_id)
+            value = {
+                "strategy": setup.strategy, "symbol": symbol.symbol,
+                "timeframe": setup.setup_timeframe, "direction": position.direction,
+                "elliott_pattern": (db.get(ElliottWaveCount, setup.elliott_wave_count_id).pattern_type if setup.elliott_wave_count_id else "none"),
+                "elliott_wave": setup.setup_conditions_json.get("wave", "none"),
+                "confidence_bucket": f"{int(setup.confidence_score // 10) * 10}-{int(setup.confidence_score // 10) * 10 + 9}",
+            }[key]
+            bucket = groups.setdefault(str(value), {"trades": 0, "net_pnl": Decimal("0"), "wins": 0})
+            bucket["trades"] += 1
+            bucket["net_pnl"] += position.realized_pnl
+            bucket["wins"] += int(position.realized_pnl > 0)
+        return [{"value": name, **data} for name, data in groups.items()]
+    return {
+        **metrics["extended"], "wins": metrics["wins"], "losses": metrics["losses"],
+        "breakeven": metrics["break_even"], "win_rate": metrics["win_rate"],
+        "net_pnl": metrics["net_profit"], "profit_factor": metrics["profit_factor"],
+        "expectancy": metrics["expectancy"], "average_r": metrics["average_rr"],
+        "max_drawdown_pct": metrics["max_drawdown_pct"],
+        "breakdowns": {key: grouped(key) for key in (
+            "strategy", "symbol", "timeframe", "direction", "elliott_pattern",
+            "elliott_wave", "confidence_bucket",
+        )}, "paper_only": True,
+    }
 
 
 @router.get("/elliott-wave/counts", response_model=list[ElliottWaveCountOut])

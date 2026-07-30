@@ -453,3 +453,11 @@ class PaperTradeRequest(BaseModel):
     max_risk_per_trade_pct: Decimal = Field(Decimal("1"), gt=0, le=5)
     slippage_bps: Decimal = Field(Decimal("2"), ge=0)
     taker_fee_pct: Decimal = Field(Decimal("0.05"), ge=0)
+
+
+class PaperAccountResetRequest(BaseModel):
+    starting_balance: Decimal = Field(Decimal("10000"), gt=0)
+
+
+class PaperCloseRequest(BaseModel):
+    slippage_bps: Decimal | None = Field(None, ge=0)

@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database.base import Base
 from app.models import (
-    BacktestRun, BacktestTrade, Candle, ElliottWaveCount, FVGZone,
+    BacktestRun, BacktestTrade, BotLog, Candle, ElliottWaveCount, FVGZone,
     LiquidityPool, LiquiditySweep, MarketStructureEvent, OrderBlock, Setting,
     SwingPoint, Symbol, TradeSetup,
 )
@@ -49,7 +49,7 @@ def candle_coverage(db: Session, symbol_id: int, timeframe: str, start: datetime
         "available_from": available_from.isoformat() if available_from else None,
         "available_to": available_to.isoformat() if available_to else None,
         "requested_from": start.isoformat(), "requested_to": end.isoformat(),
-        "candle_count": count,
+        "requested_timeframe": timeframe, "candle_count": count,
     }
 
 
@@ -146,7 +146,8 @@ def _diagnostics(replay: Session, run: BacktestRun, candle_count: int):
         "elliott_counts_generated": _count(replay, ElliottWaveCount, run),
         "setup_candidates": len(setups), "setups_rejected": len(rejected),
         "setups_eligible": len(setups) - len(rejected), "entries_triggered": 0,
-        "trades_completed": 0, "rejection_reasons": dict(reasons),
+        "trades_opened": 0, "trades_closed": 0, "trades_completed": 0,
+        "rejection_reasons": dict(reasons),
     }
     return diagnostics, setups
 
@@ -154,6 +155,12 @@ def _diagnostics(replay: Session, run: BacktestRun, candle_count: int):
 def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
     settings = run.settings_json
     run.status, run.started_at = "running", datetime.now(timezone.utc)
+    db.add(BotLog(
+        level="INFO", service="backtest", event_type="backtest_started",
+        message=f"Backtest {run.id} started",
+        context_json={"backtest_run_id": run.id, "symbol_id": run.symbol_id, "timeframe": run.timeframe},
+    ))
+    db.commit()
     try:
         factory, candles, coverage = _replay_analysis(db, run)
     except CandleCoverageError:
@@ -191,6 +198,7 @@ def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
                 diagnostics["rejection_reasons"]["missing_target"] = diagnostics["rejection_reasons"].get("missing_target", 0) + 1
                 continue
             diagnostics["entries_triggered"] += 1
+            diagnostics["trades_opened"] += 1
             path = future[future.index(entry_candle):]
             exit_candle, raw_exit, reason, holding = None, None, "end_of_test", 0
             for holding, candle in enumerate(path, 1):
@@ -227,6 +235,7 @@ def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
     for key in ("trades_taken", "wins", "losses", "break_even", "gross_profit", "gross_loss", "net_profit", "profit_factor", "win_rate", "max_drawdown_pct", "expectancy", "average_rr", "sharpe_like_ratio"):
         setattr(run, key, metrics[key])
     diagnostics["trades_completed"] = len(pnls)
+    diagnostics["trades_closed"] = len(pnls)
     run.total_setups = diagnostics["setup_candidates"]
     run.settings_json = {
         **settings, "coverage": coverage, "diagnostics": diagnostics,
@@ -236,6 +245,11 @@ def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
         "analysis_source": "isolated replay of the production closed-candle pipeline",
     }
     run.status, run.completed_at = "completed", datetime.now(timezone.utc)
+    db.add(BotLog(
+        level="INFO", service="backtest", event_type="backtest_completed",
+        message=f"Backtest {run.id} completed",
+        context_json={"backtest_run_id": run.id, "trades_closed": len(pnls), "setup_candidates": run.total_setups},
+    ))
     db.commit()
     db.refresh(run)
     return run
