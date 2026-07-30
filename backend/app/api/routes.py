@@ -69,7 +69,7 @@ from app.services.broadcast import broadcaster
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
-from app.trading.backtest import run_backtest
+from app.trading.backtest import CandleCoverageError, run_backtest
 from app.trading.execution import execution_fee, position_size, slipped_price
 from app.trading.validation import validate_setup
 
@@ -544,7 +544,13 @@ def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
     db.add(run)
     db.commit()
     db.refresh(run)
-    return run_backtest(db, run)
+    try:
+        return run_backtest(db, run)
+    except CandleCoverageError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "coverage": exc.coverage},
+        ) from exc
 
 
 @router.get("/backtests")
