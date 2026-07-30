@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import (
@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES
+from app.core.logging import log_event
 from app.database.session import get_db
 from app.market_data.binance_ws import market_stream
 from app.elliott.service import recalculate_elliott
@@ -50,6 +51,7 @@ from app.schemas.common import (
     LiquidityOut,
     LiquiditySweepOut,
     MarketBiasOut,
+    MarketDataBackfillRequest,
     OrderBlockOut,
     PremiumDiscountOut,
     RuntimeSettings,
@@ -71,7 +73,9 @@ from app.services.broadcast import broadcaster
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
-from app.trading.backtest import CandleCoverageError, run_backtest
+from app.trading.backtest import CandleCoverageError, candle_coverage, run_backtest
+from app.services.historical_backfill import historical_backfill
+from app.market_data.binance_rest import BinanceRESTClient
 from app.trading.execution import execution_fee, position_size, slipped_price
 from app.trading.metrics import calculate_metrics
 from app.trading.paper import manual_close
@@ -117,6 +121,8 @@ def candles(
     timeframe: str,
     start_time: datetime | None = None,
     end_time: datetime | None = None,
+    before: datetime | None = None,
+    after: datetime | None = None,
     limit: int = Query(500, ge=1, le=1500),
     db: Session = Depends(get_db),
 ):
@@ -125,12 +131,37 @@ def candles(
     query = select(Candle).where(
         Candle.symbol_id == symbol_row.id, Candle.timeframe == timeframe
     )
-    if start_time:
-        query = query.where(Candle.open_time >= start_time)
-    if end_time:
-        query = query.where(Candle.open_time <= end_time)
+    lower, upper = after or start_time, before or end_time
+    if lower:
+        query = query.where(Candle.open_time > lower)
+    if upper:
+        query = query.where(Candle.open_time < upper)
     rows = list(db.scalars(query.order_by(Candle.open_time.desc()).limit(limit)))
     return list(reversed(rows))
+
+
+@router.get("/market-data/coverage")
+def market_data_coverage():
+    return historical_backfill.coverage()
+
+
+@router.post("/market-data/backfill")
+async def market_data_backfill(body: MarketDataBackfillRequest):
+    return historical_backfill.schedule(body.symbol, body.timeframe, days=body.days)
+
+
+@router.get("/market-data/backfill/status")
+def market_data_backfill_status(symbol: str | None = None, timeframe: str | None = None):
+    return historical_backfill.status(symbol, timeframe)
+
+
+@router.get("/market-data/price")
+async def market_data_price(symbol: str):
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=422, detail="Unsupported symbol")
+    price = await BinanceRESTClient().fetch_price(symbol)
+    return {"symbol": symbol, "price": str(price), "timestamp": datetime.now(timezone.utc)}
 
 
 @router.get("/swings", response_model=list[SwingOut])
@@ -574,11 +605,34 @@ def paper_trade_setup(setup_id: int, body: PaperTradeRequest | None = None, db: 
 
 
 @router.post("/backtests")
-def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
+async def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
     symbol = resolve_symbol(db, body.symbol)
     validate_timeframe(body.timeframe)
     if body.start_time >= body.end_time:
         raise HTTPException(status_code=422, detail="start_time must be before end_time")
+    coverage = candle_coverage(db, symbol.id, body.timeframe, body.start_time, body.end_time)
+    available_from = datetime.fromisoformat(coverage["available_from"]) if coverage["available_from"] else None
+    available_to = datetime.fromisoformat(coverage["available_to"]) if coverage["available_to"] else None
+    start, end = body.start_time, body.end_time
+    if available_from and available_from.tzinfo is None and start.tzinfo is not None:
+        start, end = start.replace(tzinfo=None), end.replace(tzinfo=None)
+    if not available_from or available_from > start or not available_to or available_to < end:
+        await historical_backfill.run(
+            symbol.symbol, body.timeframe, start=body.start_time, end=body.end_time
+        )
+        coverage = candle_coverage(db, symbol.id, body.timeframe, body.start_time, body.end_time)
+        db.expire_all()
+        refreshed_from = datetime.fromisoformat(coverage["available_from"]) if coverage["available_from"] else None
+        refreshed_to = datetime.fromisoformat(coverage["available_to"]) if coverage["available_to"] else None
+        if refreshed_from and refreshed_from.tzinfo is None and body.start_time.tzinfo is not None:
+            requested_start, requested_end = body.start_time.replace(tzinfo=None), body.end_time.replace(tzinfo=None)
+        else:
+            requested_start, requested_end = body.start_time, body.end_time
+        if not refreshed_from or refreshed_from > requested_start or not refreshed_to or refreshed_to < requested_end:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Insufficient historical candle coverage.", "coverage": coverage},
+            )
     run = BacktestRun(
         symbol_id=symbol.id, timeframe=body.timeframe, strategy=body.strategy,
         start_time=body.start_time, end_time=body.end_time,
@@ -957,6 +1011,7 @@ ws_router = APIRouter()
 @ws_router.websocket("/ws/market")
 async def market_websocket(websocket: WebSocket):
     await broadcaster.connect(websocket)
+    log_event("INFO", "websocket", "frontend_ws_connected", "Frontend market websocket connected")
     try:
         await websocket.send_json(
             {"type": "connection", "data": {"status": "connected"}}

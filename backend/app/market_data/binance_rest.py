@@ -59,6 +59,12 @@ class BinanceRESTClient:
                     await asyncio.sleep(min(30, 2 ** attempt))
         raise BinanceAPIError("Binance request failed after retries")
 
+    async def fetch_price(self, symbol: str) -> Decimal:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+            response = await client.get("/fapi/v1/ticker/price", params={"symbol": symbol})
+            response.raise_for_status()
+            return Decimal(response.json()["price"])
+
     async def fetch_historical_klines(self, symbol: str, timeframe: str, start_time: datetime | None = None, end_time: datetime | None = None, limit: int = 500) -> list[CandleData]:
         params = {"symbol": symbol, "interval": timeframe, "limit": min(limit, 1500)}
         if start_time:
@@ -81,4 +87,3 @@ class BinanceRESTClient:
                 break
         by_time = {item.open_time: item for item in results}
         return [by_time[key] for key in sorted(by_time)]
-

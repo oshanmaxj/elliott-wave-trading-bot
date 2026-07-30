@@ -12,7 +12,7 @@ from app.core.logging import configure_logging, log_event
 from app.database.session import SessionLocal
 from app.market_data.binance_ws import market_stream
 from app.repositories.market import ensure_symbol
-from app.services.historical_sync import HistoricalSyncService
+from app.services.historical_backfill import historical_backfill
 
 config = get_settings()
 configure_logging(config.log_level)
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
         if config.enable_startup_sync:
             tasks.append(
                 asyncio.create_task(
-                    HistoricalSyncService().sync_configured(), name="historical-sync"
+                    historical_backfill.run_configured(), name="historical-backfill"
                 )
             )
         if config.enable_market_stream:

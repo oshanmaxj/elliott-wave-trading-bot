@@ -3,8 +3,11 @@ import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMark
 
 const seconds = value => Math.floor(new Date(value).getTime() / 1000)
 
-export default function MarketChart({ candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings }) {
+export default function MarketChart({ candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder }) {
   const host = useRef(null)
+  const loadingOlder = useRef(false)
+  const visibleRange = useRef(null)
+  const previousLength = useRef(0)
   useEffect(() => {
     if (!host.current || !candles.length) return
     const container = host.current
@@ -50,7 +53,15 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
       band.element.style.display = 'block'; band.element.style.top = `${Math.min(top,bottom)}px`; band.element.style.height = `${Math.abs(bottom-top)}px`
     })
     renderMarkers(false)
-    chart.timeScale().subscribeVisibleLogicalRangeChange(range => { renderMarkers(Boolean(settings.internalSwings && range && range.to - range.from <= 80)); updateBands() })
+    chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (range) visibleRange.current = range
+      renderMarkers(Boolean(settings.internalSwings && range && range.to - range.from <= 80))
+      updateBands()
+      if (range && range.from < 20 && onLoadOlder && !loadingOlder.current) {
+        loadingOlder.current = true
+        Promise.resolve(onLoadOlder()).finally(() => { loadingOlder.current = false })
+      }
+    })
     settings.fvg && fvg.filter(z => ['active','partially_mitigated'].includes(z.status)).slice(-8).forEach(z => {
       candleSeries.createPriceLine({ price: +z.upper_price, color: z.direction === 'bullish' ? '#20c99788' : '#ef5b5b88', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: `${z.direction === 'bullish' ? 'B' : 'S'} FVG` })
       candleSeries.createPriceLine({ price: +z.lower_price, color: z.direction === 'bullish' ? '#20c99788' : '#ef5b5b88', lineWidth: 1, lineStyle: 2, axisLabelVisible: false })
@@ -82,9 +93,18 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
       if (settings.entryZones && setup.stop_loss != null) candleSeries.createPriceLine({ price:+setup.stop_loss,color:'#ef4444',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'SL' })
       if (settings.targets) [setup.take_profit_1,setup.take_profit_2,setup.take_profit_3].forEach((target,index)=>target!=null&&candleSeries.createPriceLine({price:+target,color:'#22c55e',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:`TP${index+1}`}))
     })
-    chart.timeScale().fitContent()
+    const added = Math.max(0, candles.length - previousLength.current)
+    if (visibleRange.current && previousLength.current) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: visibleRange.current.from + added,
+        to: visibleRange.current.to + added,
+      })
+    } else {
+      chart.timeScale().fitContent()
+    }
+    previousLength.current = candles.length
     requestAnimationFrame(updateBands)
     return () => { bands.forEach(band => band.element.remove()); chart.remove() }
-  }, [candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings])
+  }, [candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder])
   return <div className="chart" ref={host} />
 }

@@ -328,6 +328,27 @@ class SyncRequest(BaseModel):
         return value
 
 
+class MarketDataBackfillRequest(BaseModel):
+    symbol: str
+    timeframe: str
+    days: int | None = Field(None, ge=1, le=3650)
+
+    @field_validator("symbol")
+    @classmethod
+    def valid_symbol(cls, value: str) -> str:
+        value = value.upper()
+        if value not in SUPPORTED_SYMBOLS:
+            raise ValueError("unsupported symbol")
+        return value
+
+    @field_validator("timeframe")
+    @classmethod
+    def valid_timeframe(cls, value: str) -> str:
+        if value not in SUPPORTED_TIMEFRAMES:
+            raise ValueError("unsupported timeframe")
+        return value
+
+
 class AnalysisBackfillRequest(BaseModel):
     symbol: str
     timeframe: str

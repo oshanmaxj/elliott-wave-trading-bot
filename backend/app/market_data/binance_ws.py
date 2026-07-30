@@ -49,6 +49,7 @@ class BinanceWebSocketManager:
             payload = {"id": candle.id, "symbol": symbol, "timeframe": timeframe, "open_time": data.open_time.isoformat(), "close_time": data.close_time.isoformat(), "open": str(data.open), "high": str(data.high), "low": str(data.low), "close": str(data.close), "volume": str(data.volume), "is_closed": data.is_closed}
         await broadcaster.broadcast("candle_closed" if data.is_closed else "candle_update", payload)
         if data.is_closed:
+            log_event("INFO", "binance_ws", "candle_closed", "Closed candle persisted", {"symbol": symbol, "timeframe": timeframe, "candle_id": candle_id})
             await process_closed_candle(candle_id)
 
     async def run(self) -> None:
@@ -62,7 +63,7 @@ class BinanceWebSocketManager:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=10, max_queue=2048) as socket:
                     self.connected = True
                     attempt = 0
-                    log_event("INFO", "binance_ws", "connected", "Binance market stream connected")
+                    log_event("INFO", "binance_ws", "market_stream_connected", "Binance market stream connected")
                     while self.running:
                         raw = await asyncio.wait_for(socket.recv(), timeout=45)
                         self.last_message_at = datetime.now(timezone.utc)
@@ -74,7 +75,8 @@ class BinanceWebSocketManager:
                 self.reconnect_count += 1
                 delay = min(60, 2 ** attempt)
                 attempt += 1
-                log_event("WARNING", "binance_ws", "reconnecting", str(exc), {"delay_seconds": delay})
+                log_event("WARNING", "binance_ws", "market_stream_disconnected", str(exc))
+                log_event("WARNING", "binance_ws", "market_stream_reconnecting", str(exc), {"delay_seconds": delay})
                 if self.running:
                     await asyncio.sleep(delay)
         self.connected = False
@@ -85,4 +87,3 @@ class BinanceWebSocketManager:
 
 
 market_stream = BinanceWebSocketManager()
-

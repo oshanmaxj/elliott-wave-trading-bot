@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     default_symbols: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
     default_timeframes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["15m", "1h", "4h"])
     historical_candle_limit: int = Field(default=500, ge=10, le=1500)
+    history_days_15m: int = Field(default=180, ge=1)
+    history_days_1h: int = Field(default=365, ge=1)
+    history_days_4h: int = Field(default=730, ge=1)
+    history_backfill_rate_delay: float = Field(default=0.15, ge=0, le=5)
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
