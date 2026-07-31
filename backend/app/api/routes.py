@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import (
@@ -13,7 +13,7 @@ from fastapi import (
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES
+from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, TIMEFRAME_MS
 from app.core.logging import log_event
 from app.database.session import get_db
 from app.market_data.binance_ws import market_stream
@@ -74,7 +74,7 @@ from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
 from app.trading.backtest import CandleCoverageError, candle_coverage, run_backtest
-from app.services.historical_backfill import historical_backfill
+from app.services.historical_backfill import aligned_range, historical_backfill, latest_closed_time
 from app.market_data.binance_rest import BinanceRESTClient
 from app.trading.execution import execution_fee, position_size, slipped_price
 from app.trading.metrics import calculate_metrics
@@ -116,7 +116,7 @@ def symbols(db: Session = Depends(get_db)):
 
 
 @router.get("/candles", response_model=list[CandleOut])
-def candles(
+async def candles(
     symbol: str,
     timeframe: str,
     start_time: datetime | None = None,
@@ -128,6 +128,20 @@ def candles(
 ):
     symbol_row = resolve_symbol(db, symbol)
     validate_timeframe(timeframe)
+    step = timedelta(milliseconds=TIMEFRAME_MS[timeframe])
+    history_end = before or end_time or latest_closed_time(timeframe)
+    history_start = after or start_time or (history_end - step * limit)
+    aligned_start, aligned_end = aligned_range(history_start, history_end, timeframe)
+    verification = historical_backfill.verify(symbol_row.symbol, timeframe, aligned_start, aligned_end)
+    if not verification["coverage_complete"]:
+        try:
+            await historical_backfill.run(symbol_row.symbol, timeframe, start=history_start, end=history_end)
+            db.expire_all()
+        except Exception as exc:
+            log_event("WARNING", "market_data", "chart_history_backfill_failed", str(exc), {
+                "symbol": symbol_row.symbol, "timeframe": timeframe,
+                "requested_from": history_start.isoformat(), "requested_to": history_end.isoformat(),
+            })
     query = select(Candle).where(
         Candle.symbol_id == symbol_row.id, Candle.timeframe == timeframe
     )
@@ -610,32 +624,29 @@ async def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
     validate_timeframe(body.timeframe)
     if body.start_time >= body.end_time:
         raise HTTPException(status_code=422, detail="start_time must be before end_time")
-    coverage = candle_coverage(db, symbol.id, body.timeframe, body.start_time, body.end_time)
-    available_from = datetime.fromisoformat(coverage["available_from"]) if coverage["available_from"] else None
-    available_to = datetime.fromisoformat(coverage["available_to"]) if coverage["available_to"] else None
-    start, end = body.start_time, body.end_time
-    if available_from and available_from.tzinfo is None and start.tzinfo is not None:
-        start, end = start.replace(tzinfo=None), end.replace(tzinfo=None)
-    if not available_from or available_from > start or not available_to or available_to < end:
-        await historical_backfill.run(
-            symbol.symbol, body.timeframe, start=body.start_time, end=body.end_time
-        )
-        coverage = candle_coverage(db, symbol.id, body.timeframe, body.start_time, body.end_time)
+    start, last_open = aligned_range(body.start_time, body.end_time, body.timeframe)
+    verification = historical_backfill.verify(symbol.symbol, body.timeframe, start, last_open)
+    if not verification["coverage_complete"]:
+        try:
+            await historical_backfill.run(
+                symbol.symbol, body.timeframe, start=body.start_time, end=body.end_time
+            )
+        except Exception as exc:
+            verification = historical_backfill.verify(symbol.symbol, body.timeframe, start, last_open)
+            raise HTTPException(status_code=503, detail={
+                "code": "historical_backfill_failed", "message": str(exc),
+                "exception_type": type(exc).__name__, "coverage": verification,
+            }) from exc
         db.expire_all()
-        refreshed_from = datetime.fromisoformat(coverage["available_from"]) if coverage["available_from"] else None
-        refreshed_to = datetime.fromisoformat(coverage["available_to"]) if coverage["available_to"] else None
-        if refreshed_from and refreshed_from.tzinfo is None and body.start_time.tzinfo is not None:
-            requested_start, requested_end = body.start_time.replace(tzinfo=None), body.end_time.replace(tzinfo=None)
-        else:
-            requested_start, requested_end = body.start_time, body.end_time
-        if not refreshed_from or refreshed_from > requested_start or not refreshed_to or refreshed_to < requested_end:
+        verification = historical_backfill.verify(symbol.symbol, body.timeframe, start, last_open)
+        if not verification["coverage_complete"]:
             raise HTTPException(
-                status_code=422,
-                detail={"message": "Insufficient historical candle coverage.", "coverage": coverage},
+                status_code=503,
+                detail={"code": "historical_coverage_unavailable", "message": "Historical candle coverage could not be obtained.", "coverage": verification},
             )
     run = BacktestRun(
         symbol_id=symbol.id, timeframe=body.timeframe, strategy=body.strategy,
-        start_time=body.start_time, end_time=body.end_time,
+        start_time=start, end_time=last_open + timedelta(milliseconds=TIMEFRAME_MS[body.timeframe] - 1),
         starting_balance=body.starting_balance, risk_per_trade_pct=body.risk_per_trade_pct,
         status="pending", settings_json={
             "maker_fee_pct": str(body.maker_fee_pct), "taker_fee_pct": str(body.taker_fee_pct),
@@ -648,10 +659,21 @@ async def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
     try:
         return run_backtest(db, run)
     except CandleCoverageError as exc:
+        run.status, run.completed_at = "failed", datetime.now(timezone.utc)
+        run.settings_json = {**run.settings_json, "error": str(exc)}
+        db.commit()
         raise HTTPException(
             status_code=422,
             detail={"message": str(exc), "coverage": exc.coverage},
         ) from exc
+    except Exception as exc:
+        db.rollback()
+        run = db.get(BacktestRun, run.id)
+        run.status, run.completed_at = "failed", datetime.now(timezone.utc)
+        run.settings_json = {**(run.settings_json or {}), "error": f"{type(exc).__name__}: {exc}"}
+        db.commit()
+        log_event("ERROR", "backtest", "backtest_failed", str(exc), {"backtest_run_id": run.id, "exception_type": type(exc).__name__})
+        raise
 
 
 @router.get("/backtests")

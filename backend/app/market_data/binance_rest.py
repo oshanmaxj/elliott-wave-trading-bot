@@ -5,6 +5,7 @@ from decimal import Decimal
 import httpx
 
 from app.core.config import get_settings
+from app.core.constants import TIMEFRAME_MS
 from app.schemas.common import CandleData
 
 
@@ -13,7 +14,11 @@ class BinanceAPIError(RuntimeError):
 
 
 def milliseconds(value: datetime | None) -> int | None:
-    return int(value.timestamp() * 1000) if value else None
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return int(value.astimezone(timezone.utc).timestamp() * 1000)
 
 
 def from_ms(value: int) -> datetime:
@@ -81,7 +86,7 @@ class BinanceRESTClient:
             if not page:
                 break
             results.extend(page)
-            next_ms = int(page[-1].open_time.timestamp() * 1000) + 1
+            next_ms = int(page[-1].open_time.timestamp() * 1000) + TIMEFRAME_MS[timeframe]
             cursor = datetime.fromtimestamp(next_ms / 1000, tz=timezone.utc)
             if len(page) < page_limit or (end_time and cursor > end_time):
                 break

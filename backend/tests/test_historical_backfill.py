@@ -34,6 +34,21 @@ class FakeClient:
         return rows
 
 
+class BatchClient:
+    def __init__(self, batch_size=1500, empty=False):
+        self.batch_size, self.empty, self.calls = batch_size, empty, []
+
+    async def fetch_historical_klines(self, symbol, timeframe, start, end, limit):
+        self.calls.append((start, end, limit))
+        if self.empty:
+            return []
+        step = timedelta(milliseconds={"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}[timeframe])
+        rows, cursor = [], start
+        while cursor <= end and len(rows) < min(limit, self.batch_size):
+            rows.append(data(cursor, timeframe)); cursor += step
+        return rows
+
+
 @pytest.mark.asyncio
 async def test_backfill_paginates_and_is_idempotent(session_factory, monkeypatch):
     monkeypatch.setattr("app.services.historical_backfill.log_event", lambda *args, **kwargs: None)
@@ -63,3 +78,34 @@ async def test_backfill_resumes_oldest_missing_edge(session_factory, monkeypatch
     await service.run("BTCUSDT", "1h", start=start, end=start + timedelta(hours=4))
     assert client.calls[0][0].replace(tzinfo=timezone.utc) == start
     assert client.calls[0][1].replace(tzinfo=timezone.utc) == start + timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hours,minimum_calls", [(24 * 31, 1), (24 * 365, 6)])
+async def test_month_and_year_forward_pagination(session_factory, monkeypatch, hours, minimum_calls):
+    monkeypatch.setattr("app.services.historical_backfill.log_event", lambda *args, **kwargs: None)
+    client, start = BatchClient(), datetime(2025, 1, 1, tzinfo=timezone.utc)
+    result = await HistoricalBackfillService(client, session_factory).run("BTCUSDT", "1h", start=start, end=start + timedelta(hours=hours))
+    assert client.calls[0][0] == start
+    assert len(client.calls) >= minimum_calls
+    assert result["coverage"]["coverage_complete"]
+    assert all(b[0] > a[0] for a, b in zip(client.calls, client.calls[1:]))
+
+
+@pytest.mark.asyncio
+async def test_partial_final_batch_and_duplicate_upsert(session_factory, monkeypatch):
+    monkeypatch.setattr("app.services.historical_backfill.log_event", lambda *args, **kwargs: None)
+    client, start = BatchClient(batch_size=2), datetime(2025, 1, 1, tzinfo=timezone.utc)
+    service = HistoricalBackfillService(client, session_factory)
+    first = await service.run("BTCUSDT", "1h", start=start, end=start + timedelta(hours=5))
+    second = await service.run("BTCUSDT", "1h", start=start, end=start + timedelta(hours=5))
+    assert first["inserted_candles"] == 5 and first["processed_batches"] == 3
+    assert second["inserted_candles"] == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_response_does_not_claim_completion(session_factory, monkeypatch):
+    monkeypatch.setattr("app.services.historical_backfill.log_event", lambda *args, **kwargs: None)
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with pytest.raises(RuntimeError, match="coverage remains incomplete"):
+        await HistoricalBackfillService(BatchClient(empty=True), session_factory).run("BTCUSDT", "1h", start=start, end=start + timedelta(hours=2))

@@ -11,6 +11,12 @@ test('websocket update replaces the current candle without duplication',()=>{
   assert.equal(next[0].close,'105')
 })
 
+test('a live update cannot mutate a closed candle',()=>{
+  const closed={...candle('2026-01-01T00:00:00Z','100'),is_closed:true}
+  const live={...closed,close:'999',is_closed:false,symbol:'BTCUSDT',timeframe:'1h'}
+  assert.deepEqual(mergeLiveCandle([closed],live,'BTCUSDT','1h'),[closed])
+})
+
 test('timeframe changes never mix candle updates',()=>{
   const rows=[candle('2026-01-01T00:00:00Z')]
   assert.deepEqual(mergeLiveCandle(rows,{...candle('2026-01-01T01:00:00Z'),symbol:'BTCUSDT',timeframe:'15m'},'BTCUSDT','1h'),rows)

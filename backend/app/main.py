@@ -1,6 +1,9 @@
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import select
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +15,7 @@ from app.core.logging import configure_logging, log_event
 from app.database.session import SessionLocal
 from app.market_data.binance_ws import market_stream
 from app.repositories.market import ensure_symbol
+from app.models import BacktestRun
 from app.services.historical_backfill import historical_backfill
 
 config = get_settings()
@@ -23,6 +27,13 @@ async def lifespan(app: FastAPI):
     tasks: list[asyncio.Task] = []
     try:
         with SessionLocal.begin() as db:
+            stale_before = datetime.now(timezone.utc) - timedelta(hours=1)
+            for run in db.scalars(select(BacktestRun).where(
+                BacktestRun.status.in_(["pending", "running"]),
+                BacktestRun.updated_at < stale_before,
+            )):
+                run.status, run.completed_at = "failed", datetime.now(timezone.utc)
+                run.settings_json = {**(run.settings_json or {}), "error": "Recovered stale backtest after service restart or worker failure"}
             for symbol in config.default_symbols:
                 ensure_symbol(db, symbol)
         if config.enable_startup_sync:

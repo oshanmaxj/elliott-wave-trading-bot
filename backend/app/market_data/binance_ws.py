@@ -21,13 +21,16 @@ class BinanceWebSocketManager:
         self.connected = False
         self.last_message_at: datetime | None = None
         self.reconnect_count = 0
+        self.connected_at: datetime | None = None
+        self._socket = None
 
     @property
     def streams(self) -> list[str]:
         return [f"{symbol.lower()}@kline_{timeframe}" for symbol in self.settings.default_symbols for timeframe in self.settings.default_timeframes]
 
     def status(self) -> dict:
-        return {"running": self.running, "connected": self.connected, "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None, "reconnect_count": self.reconnect_count, "streams": self.streams}
+        uptime = (datetime.now(timezone.utc) - self.connected_at).total_seconds() if self.connected_at else None
+        return {"running": self.running, "connected": self.connected, "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None, "reconnect_count": self.reconnect_count, "connection_uptime_seconds": uptime, "streams": self.streams}
 
     @staticmethod
     def normalize(message: dict) -> tuple[str, str, CandleData]:
@@ -53,6 +56,9 @@ class BinanceWebSocketManager:
             await process_closed_candle(candle_id)
 
     async def run(self) -> None:
+        if self.running:
+            log_event("WARNING", "binance_ws", "duplicate_manager_ignored", "Market stream manager is already running")
+            return
         self.running = True
         attempt = 0
         query = "/".join(self.streams)
@@ -61,29 +67,36 @@ class BinanceWebSocketManager:
             try:
                 log_event("INFO", "binance_ws", "connecting", "Connecting to Binance market streams", {"stream_count": len(self.streams)})
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=10, max_queue=2048) as socket:
+                    self._socket = socket
                     self.connected = True
+                    self.connected_at = datetime.now(timezone.utc)
                     attempt = 0
                     log_event("INFO", "binance_ws", "market_stream_connected", "Binance market stream connected")
                     while self.running:
-                        raw = await asyncio.wait_for(socket.recv(), timeout=45)
+                        raw = await socket.recv()
                         self.last_message_at = datetime.now(timezone.utc)
                         await self.handle_message(raw)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
+                uptime = (datetime.now(timezone.utc) - self.connected_at).total_seconds() if self.connected_at else 0
                 self.connected = False
                 self.reconnect_count += 1
                 delay = min(60, 2 ** attempt)
                 attempt += 1
-                log_event("WARNING", "binance_ws", "market_stream_disconnected", str(exc))
-                log_event("WARNING", "binance_ws", "market_stream_reconnecting", str(exc), {"delay_seconds": delay})
+                context = {"exception_type": type(exc).__name__, "exception_message": str(exc), "close_code": getattr(exc, "code", None), "close_reason": getattr(exc, "reason", None), "reconnect_attempt": attempt, "connection_uptime_seconds": round(uptime, 3), "delay_seconds": delay}
+                log_event("WARNING", "binance_ws", "market_stream_disconnected", str(exc) or type(exc).__name__, context)
                 if self.running:
                     await asyncio.sleep(delay)
         self.connected = False
+        self.connected_at = None
+        self._socket = None
         self.running = False
 
     async def stop(self) -> None:
         self.running = False
+        if self._socket is not None:
+            await self._socket.close(code=1000, reason="service shutdown")
 
 
 market_stream = BinanceWebSocketManager()

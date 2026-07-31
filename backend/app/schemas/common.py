@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -460,6 +460,11 @@ class BacktestRequest(BaseModel):
     taker_fee_pct: Decimal = Field(Decimal("0.05"), ge=0)
     slippage_bps: Decimal = Field(Decimal("2"), ge=0)
     same_candle_policy: str = Field("stop_first", pattern="^(stop_first|target_first|skip_ambiguous)$")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def normalize_utc(cls, value: datetime) -> datetime:
+        return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc))
 
 
 class PaperAccountRequest(BaseModel):
