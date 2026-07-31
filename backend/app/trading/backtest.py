@@ -1,6 +1,5 @@
 """Isolated deterministic historical replay using the production analysis pipeline."""
 
-import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -68,7 +67,7 @@ def _clone_candle(row: Candle) -> Candle:
     )
 
 
-def _replay_analysis(db: Session, run: BacktestRun):
+async def _replay_analysis(db: Session, run: BacktestRun):
     coverage = candle_coverage(db, run.symbol_id, run.timeframe, run.start_time, run.end_time)
     if not coverage["candle_count"] or coverage["available_from"] is None:
         raise CandleCoverageError(coverage)
@@ -112,7 +111,7 @@ def _replay_analysis(db: Session, run: BacktestRun):
         for candle in sorted(entry_rows + htf_rows, key=lambda c: (c.close_time, c.timeframe, c.id)):
             replay.add(_clone_candle(candle))
             replay.commit()
-            asyncio.run(process_closed_candle(candle.id, broadcast=False, session_factory=factory))
+            await process_closed_candle(candle.id, broadcast=False, session_factory=factory)
     requested = [c for c in entry_rows if c.close_time >= start and c.close_time <= end]
     return factory, requested, coverage
 
@@ -152,7 +151,7 @@ def _diagnostics(replay: Session, run: BacktestRun, candle_count: int):
     return diagnostics, setups
 
 
-def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
+async def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
     settings = run.settings_json
     run.status, run.started_at = "running", datetime.now(timezone.utc)
     db.add(BotLog(
@@ -162,7 +161,7 @@ def run_backtest(db: Session, run: BacktestRun) -> BacktestRun:
     ))
     db.commit()
     try:
-        factory, candles, coverage = _replay_analysis(db, run)
+        factory, candles, coverage = await _replay_analysis(db, run)
     except CandleCoverageError:
         run.status = "failed"
         db.commit()

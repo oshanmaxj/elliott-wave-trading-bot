@@ -25,6 +25,13 @@ def test_future_candles_cannot_affect_earlier_visibility():
     assert closed_candles_at(rows, rows[0].close_time) == visible
 
 
+def test_backtest_replay_api_is_async_aware():
+    import inspect
+    from app.trading.backtest import _replay_analysis, run_backtest
+    assert inspect.iscoroutinefunction(_replay_analysis)
+    assert inspect.iscoroutinefunction(run_backtest)
+
+
 def test_htf_candle_is_available_only_after_close():
     htf = candle(4, "4h")
     assert htf not in closed_candles_at([htf], htf.close_time - timedelta(microseconds=1))

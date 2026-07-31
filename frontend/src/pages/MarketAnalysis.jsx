@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import MarketChart from '../components/MarketChart'
 import { api, getMarketBundle } from '../api'
 import { mergeLiveCandle, prependHistory } from '../marketData'
@@ -14,6 +14,8 @@ export default function MarketAnalysis(){
   const [chartSettings,setChartSettings]=useState(cleanView)
   const [loading,setLoading]=useState(true),[olderLoading,setOlderLoading]=useState(false),[error,setError]=useState('')
   const [connection,setConnection]=useState('RECONNECTING'),[lastUpdate,setLastUpdate]=useState(null),[coverage,setCoverage]=useState(null)
+  const candlesRef=useRef([]),olderLoadingRef=useRef(false)
+  candlesRef.current=data.candles
   const load=useCallback(async()=>{setLoading(true);setError('');try{setData(await getMarketBundle(symbol,timeframe))}catch(e){setError(e.response?.data?.detail||e.message)}finally{setLoading(false)}},[symbol,timeframe])
   useEffect(()=>{load()},[load])
   useEffect(()=>{api.get('/settings').then(({data})=>setChartSettings(current=>({...current,sweeps:data.chart_sweep_display,setups:data.chart_setup_display,entryZones:data.chart_setup_display,targets:data.chart_setup_display})))},[])
@@ -24,7 +26,7 @@ export default function MarketAnalysis(){
       setConnection('RECONNECTING')
       const protocol=location.protocol==='https:'?'wss:':'ws:'
       socket=new WebSocket(`${protocol}//${location.host}/ws/market`)
-      socket.onopen=()=>{setConnection('LIVE');lastMessage=Date.now()}
+      socket.onopen=async()=>{setConnection('LIVE');lastMessage=Date.now();try{const {data:state}=await api.get('/market/state',{params:{symbol,timeframe}});if(state.current_candle)setData(current=>({...current,candles:mergeLiveCandle(current.candles,state.current_candle,symbol,timeframe)}));if(state.last_event_at){lastMessage=new Date(state.last_event_at).getTime();setLastUpdate(new Date(state.last_event_at))}}catch{}}
       socket.onclose=()=>{setConnection('OFFLINE');if(!stopped)reconnect=setTimeout(connect,2000)}
       socket.onmessage=event=>{
         const message=JSON.parse(event.data),payload=message.data||{}
@@ -37,18 +39,12 @@ export default function MarketAnalysis(){
     }
     connect()
     timer=setInterval(async()=>{
-      if(Date.now()-lastMessage>10000){
-        try{
-          const {data:tick}=await api.get('/market-data/price',{params:{symbol}})
-          setData(current=>{const rows=[...current.candles],last=rows.at(-1);if(!last)return current;rows[rows.length-1]={...last,close:tick.price,high:String(Math.max(+last.high,+tick.price)),low:String(Math.min(+last.low,+tick.price))};return {...current,candles:rows}})
-          setLastUpdate(new Date())
-        }catch{setConnection('OFFLINE')}
-      }
+      if(Date.now()-lastMessage>15000)setConnection('STALE')
       if(socket?.readyState===WebSocket.OPEN)socket.send('ping')
     },5000)
     return()=>{stopped=true;clearTimeout(reconnect);clearInterval(timer);socket?.close()}
   },[symbol,timeframe,load])
-  const loadOlder=useCallback(async()=>{const first=data.candles[0];if(!first||olderLoading)return;setOlderLoading(true);try{const {data:older}=await api.get('/candles',{params:{symbol,timeframe,limit:1000,before:first.open_time}});setData(current=>({...current,candles:prependHistory(current.candles,older)}))}finally{setOlderLoading(false)}},[data.candles,olderLoading,symbol,timeframe])
+  const loadOlder=useCallback(async()=>{const first=candlesRef.current[0];if(!first||olderLoadingRef.current)return;olderLoadingRef.current=true;setOlderLoading(true);try{const {data:older}=await api.get('/candles',{params:{symbol,timeframe,limit:1000,before:first.open_time}});setData(current=>({...current,candles:prependHistory(current.candles,older)}))}finally{olderLoadingRef.current=false;setOlderLoading(false)}},[symbol,timeframe])
   const selectHistory=async days=>{setLoading(true);try{const after=new Date(Date.now()-days*86400000).toISOString();let response=await api.get('/candles',{params:{symbol,timeframe,limit:1500,after}}),rows=response.data;while(rows.length&&new Date(rows[0].open_time)>new Date(after)&&response.data.length===1500){response=await api.get('/candles',{params:{symbol,timeframe,limit:1500,after,before:rows[0].open_time}});rows=prependHistory(rows,response.data)}setData(current=>({...current,candles:rows}))}finally{setLoading(false)}}
   const indicators=data.analysis?.indicator_values_json||{}
   const chartCandles=useMemo(()=>data.candles.map((c,index,all)=>{const closes=all.slice(0,index+1).map(x=>+x.close),ema=period=>closes.length<period?null:closes.reduce((previous,current,i)=>i?current*(2/(period+1))+previous*(1-2/(period+1)):current,closes[0]);return {...c,indicators:{ema20:ema(20)?{time:Math.floor(new Date(c.open_time).getTime()/1000),value:ema(20)}:null,ema50:ema(50)?{time:Math.floor(new Date(c.open_time).getTime()/1000),value:ema(50)}:null,ema200:ema(200)?{time:Math.floor(new Date(c.open_time).getTime()/1000),value:ema(200)}:null}}}),[data.candles])

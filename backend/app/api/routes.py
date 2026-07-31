@@ -657,7 +657,7 @@ async def create_backtest(body: BacktestRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(run)
     try:
-        return run_backtest(db, run)
+        return await run_backtest(db, run)
     except CandleCoverageError as exc:
         run.status, run.completed_at = "failed", datetime.now(timezone.utc)
         run.settings_json = {**run.settings_json, "error": str(exc)}
@@ -1002,6 +1002,15 @@ def market_data_status():
     return market_stream.status()
 
 
+@router.get("/market/state")
+def current_market_state(symbol: str, timeframe: str):
+    symbol = symbol.upper()
+    if symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=422, detail="Unsupported symbol")
+    validate_timeframe(timeframe)
+    return market_stream.market_state(symbol, timeframe)
+
+
 @router.get("/logs", response_model=list[BotLogOut])
 def logs(
     level: str | None = Query(None, pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"),
@@ -1033,7 +1042,7 @@ ws_router = APIRouter()
 @ws_router.websocket("/ws/market")
 async def market_websocket(websocket: WebSocket):
     await broadcaster.connect(websocket)
-    log_event("INFO", "websocket", "frontend_ws_connected", "Frontend market websocket connected")
+    log_event("INFO", "websocket", "frontend_market_ws_connected", "Frontend market websocket connected")
     try:
         await websocket.send_json(
             {"type": "connection", "data": {"status": "connected"}}
@@ -1044,5 +1053,7 @@ async def market_websocket(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         await broadcaster.disconnect(websocket)
+        log_event("INFO", "websocket", "frontend_market_ws_disconnected", "Frontend market websocket disconnected")
     except Exception:
         await broadcaster.disconnect(websocket)
+        log_event("WARNING", "websocket", "frontend_market_ws_disconnected", "Frontend market websocket disconnected unexpectedly")

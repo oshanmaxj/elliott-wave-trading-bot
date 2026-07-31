@@ -23,6 +23,7 @@ class BinanceWebSocketManager:
         self.reconnect_count = 0
         self.connected_at: datetime | None = None
         self._socket = None
+        self.current_candles: dict[str, dict] = {}
 
     @property
     def streams(self) -> list[str]:
@@ -31,6 +32,11 @@ class BinanceWebSocketManager:
     def status(self) -> dict:
         uptime = (datetime.now(timezone.utc) - self.connected_at).total_seconds() if self.connected_at else None
         return {"running": self.running, "connected": self.connected, "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None, "reconnect_count": self.reconnect_count, "connection_uptime_seconds": uptime, "streams": self.streams}
+
+    def market_state(self, symbol: str, timeframe: str) -> dict:
+        key = f"{symbol.upper()}:{timeframe}"
+        age = (datetime.now(timezone.utc) - self.last_message_at).total_seconds() if self.last_message_at else None
+        return {"symbol": symbol.upper(), "timeframe": timeframe, "connected": self.connected, "last_event_at": self.last_message_at, "event_age_seconds": age, "current_candle": self.current_candles.get(key)}
 
     @staticmethod
     def normalize(message: dict) -> tuple[str, str, CandleData]:
@@ -50,9 +56,10 @@ class BinanceWebSocketManager:
             candle, _ = upsert_candle(db, symbol_row.id, timeframe, data)
             candle_id = candle.id
             payload = {"id": candle.id, "symbol": symbol, "timeframe": timeframe, "open_time": data.open_time.isoformat(), "close_time": data.close_time.isoformat(), "open": str(data.open), "high": str(data.high), "low": str(data.low), "close": str(data.close), "volume": str(data.volume), "is_closed": data.is_closed}
+        self.current_candles[f"{symbol}:{timeframe}"] = payload
         await broadcaster.broadcast("candle_closed" if data.is_closed else "candle_update", payload)
         if data.is_closed:
-            log_event("INFO", "binance_ws", "candle_closed", "Closed candle persisted", {"symbol": symbol, "timeframe": timeframe, "candle_id": candle_id})
+            log_event("INFO", "binance_ws", "live_candle_closed", "Live candle closed and persisted", {"symbol": symbol, "timeframe": timeframe, "candle_id": candle_id})
             await process_closed_candle(candle_id)
 
     async def run(self) -> None:
@@ -75,7 +82,10 @@ class BinanceWebSocketManager:
                     while self.running:
                         raw = await socket.recv()
                         self.last_message_at = datetime.now(timezone.utc)
-                        await self.handle_message(raw)
+                        try:
+                            await self.handle_message(raw)
+                        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                            log_event("WARNING", "binance_ws", "malformed_market_event", str(exc) or type(exc).__name__, {"exception_type": type(exc).__name__})
             except asyncio.CancelledError:
                 break
             except Exception as exc:

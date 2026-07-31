@@ -5,9 +5,12 @@ const seconds = value => Math.floor(new Date(value).getTime() / 1000)
 
 export default function MarketChart({ candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder }) {
   const host = useRef(null)
+  const candleSeriesRef = useRef(null)
+  const renderedCandlesRef = useRef([])
   const loadingOlder = useRef(false)
   const visibleRange = useRef(null)
   const previousLength = useRef(0)
+  const hasCandles = candles.length > 0
   useEffect(() => {
     if (!host.current || !candles.length) return
     const container = host.current
@@ -18,6 +21,8 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
       crosshair: { vertLine: { color: '#4c6381' }, horzLine: { color: '#4c6381' } },
     })
     const candleSeries = chart.addSeries(CandlestickSeries, { upColor: '#20c997', downColor: '#ef5b5b', wickUpColor: '#20c997', wickDownColor: '#ef5b5b', borderVisible: false })
+    candleSeriesRef.current = candleSeries
+    renderedCandlesRef.current = candles
     const candleById = Object.fromEntries(candles.map(c => [c.id, c]))
     candleSeries.setData(candles.map(c => ({ time: seconds(c.open_time), open: +c.open, high: +c.high, low: +c.low, close: +c.close })))
     const colors = { ema20: '#ffcc66', ema50: '#a78bfa', ema200: '#4ea8de' }
@@ -104,7 +109,18 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
     }
     previousLength.current = candles.length
     requestAnimationFrame(updateBands)
-    return () => { bands.forEach(band => band.element.remove()); chart.remove() }
-  }, [candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder])
+    return () => { candleSeriesRef.current = null; bands.forEach(band => band.element.remove()); chart.remove() }
+  }, [hasCandles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder])
+  useEffect(() => {
+    const series = candleSeriesRef.current
+    if (!series || !candles.length) return
+    const previous = renderedCandlesRef.current
+    const next = candles.at(-1)
+    const sameHistory = previous.length === candles.length && previous.at(-1)?.open_time === next.open_time
+    const value = c => ({ time: seconds(c.open_time), open: +c.open, high: +c.high, low: +c.low, close: +c.close })
+    if (sameHistory) series.update(value(next))
+    else series.setData(candles.map(value))
+    renderedCandlesRef.current = candles
+  }, [candles])
   return <div className="chart" ref={host} />
 }
