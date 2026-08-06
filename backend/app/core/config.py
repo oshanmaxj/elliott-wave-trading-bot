@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     execution_mode: Literal["disabled", "manual", "automatic_testnet", "live"] = "disabled"
     execution_require_manual_approval: bool = True
     execution_admin_token: str = ""
+    execution_trader_token: str = ""
+    execution_viewer_token: str = ""
+    credential_encryption_key: str = ""
     allow_production_orders: bool = False
     max_risk_per_trade_pct: Decimal = Field(default=Decimal("0.25"), gt=0, le=100)
     max_daily_loss_pct: Decimal = Field(default=Decimal("1.0"), gt=0, le=100)

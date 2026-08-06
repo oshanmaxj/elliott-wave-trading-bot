@@ -1,18 +1,11 @@
-import { useState } from 'react'
-import { Activity, BarChart3, BookOpen, ChartNoAxesCombined, CircleGauge, Droplets, FlaskConical, Layers3, ScrollText, Settings as SettingsIcon, Target, WalletCards, Waves, Shield, ListChecks, Landmark, Gauge } from 'lucide-react'
-import Dashboard from './pages/Dashboard'
+import {useState} from 'react'
+import {Activity,BarChart3,BookOpen,Bot,BrainCircuit,FlaskConical,History,KeyRound,LogIn,ScrollText,Shield,WalletCards,Waves} from 'lucide-react'
 import MarketAnalysis from './pages/MarketAnalysis'
-import { FVGZones, StructureEvents, SystemLogs } from './pages/DataPages'
-import Settings from './pages/Settings'
-import { LiquiditySweeps, TradeSetups } from './pages/OpportunityPages'
+import {SystemLogs} from './pages/DataPages'
 import ElliottWave from './pages/ElliottWave'
-import { Backtests, PaperTrading, Performance } from './pages/TradingPages'
+import {Backtests,PaperTrading} from './pages/TradingPages'
+import {ActiveTrades,BinanceConnection,BotDashboard,BotStrategies,RiskSettings,TradeHistory} from './pages/ExecutionPages'
+import {setAuthToken} from './api'
 import './trading.css'
-import {ExecutionCenter,ApprovalQueue,ExchangeOrders,LivePositions,AccountBalances,RiskControl} from './pages/ExecutionPages'
-
-const nav=[['dashboard','Overview',CircleGauge],['analysis','Market Analysis',BarChart3],['elliott','Elliott Wave',Waves],['sweeps','Liquidity Sweeps',Droplets],['setups','Trade Setups',Target],['backtests','Backtests',FlaskConical],['paper','Paper Trading',WalletCards],['performance','Performance',ChartNoAxesCombined],['execution','Execution Center',Shield],['approvals','Approval Queue',ListChecks],['orders','Exchange Orders',Landmark],['positions','Live Positions',Activity],['account','Account & Balances',WalletCards],['risk','Risk Control',Gauge],['structure','Structure Events',Activity],['fvg','FVG Zones',Layers3],['logs','System Logs',ScrollText],['settings','Settings',SettingsIcon]]
-export default function App(){
-  const [page,setPage]=useState('dashboard')
-  const pages={dashboard:<Dashboard navigate={setPage}/>,analysis:<MarketAnalysis/>,elliott:<ElliottWave/>,sweeps:<LiquiditySweeps/>,setups:<TradeSetups/>,backtests:<Backtests/>,paper:<PaperTrading/>,performance:<Performance/>,execution:<ExecutionCenter/>,approvals:<ApprovalQueue/>,orders:<ExchangeOrders/>,positions:<LivePositions/>,account:<AccountBalances/>,risk:<RiskControl/>,structure:<StructureEvents/>,fvg:<FVGZones/>,logs:<SystemLogs/>,settings:<Settings/>}
-  return <div className="shell"><aside><div className="brand"><div className="mark"><BookOpen size={19}/></div><div><strong>WaveScope</strong><small>MARKET INTELLIGENCE</small></div></div><nav>{nav.map(([id,label,Icon])=><button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={17}/>{label}</button>)}</nav><div className="aside-foot"><span><i/> ANALYSIS ONLINE</span><small>Paper only · No live orders</small></div></aside><main>{pages[page]}</main></div>
-}
+const nav=[['dashboard','Dashboard',Bot],['connection','Binance Connection',KeyRound],['strategies','Bot Strategies',BrainCircuit],['active','Active Trades',Activity],['history','Trade History',History],['risk','Risk Settings',Shield],['analysis','Market Analysis',BarChart3],['elliott','Elliott Wave',Waves],['backtests','Backtesting',FlaskConical],['paper','Paper Trading',WalletCards],['logs','System Logs',ScrollText]]
+export default function App(){const [page,setPage]=useState('dashboard'),[token,setToken]=useState(''),[showAuth,setShowAuth]=useState(false),[draft,setDraft]=useState('');const signIn=()=>{setAuthToken(draft);setToken(draft);setDraft('');setShowAuth(false)};const pages={dashboard:<BotDashboard/>,connection:<BinanceConnection/>,strategies:<BotStrategies/>,active:<ActiveTrades/>,history:<TradeHistory/>,risk:<RiskSettings/>,analysis:<MarketAnalysis/>,elliott:<ElliottWave/>,backtests:<Backtests/>,paper:<PaperTrading/>,logs:<SystemLogs/>};return <div className="shell"><aside><div className="brand"><div className="mark"><BookOpen size={19}/></div><div><strong>WaveScope</strong><small>BINANCE BOT CONTROL</small></div></div><nav>{nav.map(([id,name,Icon])=><button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={17}/>{name}</button>)}</nav><div className="aside-foot"><button className="auth-button" onClick={()=>setShowAuth(true)}><LogIn size={14}/>{token?'Authenticated':'Sign in'}</button><small>Spot Testnet · Production locked</small></div></aside><main>{pages[page]}</main>{showAuth&&<div className="modal-backdrop"><div className="auth-modal"><p className="eyebrow">APPLICATION AUTHENTICATION</p><h2>Sign in to control the bot</h2><p>Enter your admin, trader, or viewer access token. It remains in memory only and is cleared when this page closes.</p><input type="password" value={draft} onChange={e=>setDraft(e.target.value)} autoFocus placeholder="Access token"/><div className="form-actions"><button onClick={()=>setShowAuth(false)}>Cancel</button><button className="primary" disabled={!draft} onClick={signIn}>Sign in</button></div></div></div>}</div>}

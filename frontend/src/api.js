@@ -1,6 +1,8 @@
 import axios from 'axios'
 
 export const api = axios.create({ baseURL: '/api', timeout: 30000 })
+export const setAuthToken = token => { api.defaults.headers.common.Authorization = token ? `Bearer ${token}` : undefined }
+api.interceptors.response.use(x=>x,async error=>{const cfg=error.config||{};if(cfg.method==='get'&&(!error.response||error.response.status>=500)&&(cfg.__retries||0)<2){cfg.__retries=(cfg.__retries||0)+1;await new Promise(r=>setTimeout(r,250*2**cfg.__retries));return api(cfg)}return Promise.reject(error)})
 export const getMarketBundle = async (symbol, timeframe) => {
   const params = { symbol, timeframe }
   const safe = promise => promise.catch(error => error.response?.status === 404 ? { data: null } : Promise.reject(error))

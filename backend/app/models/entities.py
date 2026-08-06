@@ -494,7 +494,9 @@ class Setting(Base, TimestampMixin):
 class BacktestRun(Base, TimestampMixin):
     __tablename__ = "backtest_runs"
     id: Mapped[int] = mapped_column(primary_key=True)
-    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    symbol_id: Mapped[int] = mapped_column(
+        ForeignKey("symbols.id", ondelete="CASCADE"), index=True
+    )
     timeframe: Mapped[str] = mapped_column(String(8), index=True)
     strategy: Mapped[str] = mapped_column(String(64), index=True)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -515,17 +517,27 @@ class BacktestRun(Base, TimestampMixin):
     max_drawdown_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=0)
     expectancy: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
     average_rr: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
-    sharpe_like_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sharpe_like_ratio: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 6), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     settings_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class BacktestTrade(Base):
     __tablename__ = "backtest_trades"
     id: Mapped[int] = mapped_column(primary_key=True)
-    backtest_run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id", ondelete="CASCADE"), index=True)
-    trade_setup_id: Mapped[int | None] = mapped_column(ForeignKey("trade_setups.id", ondelete="SET NULL"), nullable=True)
+    backtest_run_id: Mapped[int] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), index=True
+    )
+    trade_setup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("trade_setups.id", ondelete="SET NULL"), nullable=True
+    )
     direction: Mapped[str] = mapped_column(String(16))
     entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     entry_price: Mapped[Decimal] = mapped_column(price_type)
@@ -545,7 +557,9 @@ class BacktestTrade(Base):
     mae: Mapped[Decimal] = mapped_column(price_type, default=0)
     mfe: Mapped[Decimal] = mapped_column(price_type, default=0)
     holding_bars: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
 
 
 class PaperAccount(Base, TimestampMixin):
@@ -567,9 +581,15 @@ class PaperAccount(Base, TimestampMixin):
 class PaperPosition(Base, TimestampMixin):
     __tablename__ = "paper_positions"
     id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("paper_accounts.id", ondelete="CASCADE"), index=True)
-    trade_setup_id: Mapped[int] = mapped_column(ForeignKey("trade_setups.id", ondelete="RESTRICT"), index=True)
-    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("paper_accounts.id", ondelete="CASCADE"), index=True
+    )
+    trade_setup_id: Mapped[int] = mapped_column(
+        ForeignKey("trade_setups.id", ondelete="RESTRICT"), index=True
+    )
+    symbol_id: Mapped[int] = mapped_column(
+        ForeignKey("symbols.id", ondelete="CASCADE"), index=True
+    )
     direction: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(32), index=True)
     entry_price: Mapped[Decimal] = mapped_column(price_type)
@@ -580,15 +600,21 @@ class PaperPosition(Base, TimestampMixin):
     tp1: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
     tp2: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
     tp3: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
-    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     exit_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
     realized_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
     fees: Mapped[Decimal] = mapped_column(price_type, default=0)
     slippage: Mapped[Decimal] = mapped_column(price_type, default=0)
-    taker_fee_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("0.05"))
+    taker_fee_pct: Mapped[Decimal] = mapped_column(
+        Numeric(8, 4), default=Decimal("0.05")
+    )
     slippage_bps: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("2"))
 
 
@@ -601,8 +627,15 @@ class ExchangeAccount(Base, TimestampMixin):
     masked_api_key: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(32), default="disconnected")
     permissions_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    encrypted_api_key: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    encrypted_api_secret: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )
 
 
 class ExecutionOrder(Base, TimestampMixin):
@@ -611,46 +644,159 @@ class ExecutionOrder(Base, TimestampMixin):
     exchange: Mapped[str] = mapped_column(String(32), default="binance")
     environment: Mapped[str] = mapped_column(String(16), index=True)
     symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)
-    trade_setup_id: Mapped[int] = mapped_column(ForeignKey("trade_setups.id"), index=True)
+    trade_setup_id: Mapped[int] = mapped_column(
+        ForeignKey("trade_setups.id"), index=True
+    )
     client_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    exchange_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    side: Mapped[str] = mapped_column(String(8)); order_type: Mapped[str] = mapped_column(String(16))
+    exchange_order_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    side: Mapped[str] = mapped_column(String(8))
+    order_type: Mapped[str] = mapped_column(String(16))
     time_in_force: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    requested_quantity: Mapped[Decimal] = mapped_column(price_type); executed_quantity: Mapped[Decimal] = mapped_column(price_type, default=0)
-    requested_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True); average_fill_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    requested_quantity: Mapped[Decimal] = mapped_column(price_type)
+    executed_quantity: Mapped[Decimal] = mapped_column(price_type, default=0)
+    requested_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    average_fill_price: Mapped[Decimal | None] = mapped_column(
+        price_type, nullable=True
+    )
     quote_quantity: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), index=True); execution_state: Mapped[str] = mapped_column(String(32), index=True)
-    raw_status_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict); rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True); acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True); canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    execution_state: Mapped[str] = mapped_column(String(32), index=True)
+    raw_status_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    filled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    canceled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ExecutionFill(Base):
-    __tablename__ = "execution_fills"; __table_args__ = (UniqueConstraint("execution_order_id", "exchange_trade_id", name="uq_execution_fill_trade"),)
-    id: Mapped[int] = mapped_column(primary_key=True); execution_order_id: Mapped[int] = mapped_column(ForeignKey("execution_orders.id", ondelete="CASCADE"), index=True)
-    exchange_trade_id: Mapped[str] = mapped_column(String(64)); price: Mapped[Decimal] = mapped_column(price_type); quantity: Mapped[Decimal] = mapped_column(price_type); quote_quantity: Mapped[Decimal] = mapped_column(price_type)
-    commission: Mapped[Decimal] = mapped_column(price_type, default=0); commission_asset: Mapped[str] = mapped_column(String(16)); filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __tablename__ = "execution_fills"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_order_id", "exchange_trade_id", name="uq_execution_fill_trade"
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_order_id: Mapped[int] = mapped_column(
+        ForeignKey("execution_orders.id", ondelete="CASCADE"), index=True
+    )
+    exchange_trade_id: Mapped[str] = mapped_column(String(64))
+    price: Mapped[Decimal] = mapped_column(price_type)
+    quantity: Mapped[Decimal] = mapped_column(price_type)
+    quote_quantity: Mapped[Decimal] = mapped_column(price_type)
+    commission: Mapped[Decimal] = mapped_column(price_type, default=0)
+    commission_asset: Mapped[str] = mapped_column(String(16))
+    filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class LivePosition(Base, TimestampMixin):
     __tablename__ = "live_positions"
-    id: Mapped[int] = mapped_column(primary_key=True); exchange: Mapped[str] = mapped_column(String(32), default="binance"); environment: Mapped[str] = mapped_column(String(16), index=True)
-    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True); originating_trade_setup_id: Mapped[int] = mapped_column(ForeignKey("trade_setups.id"), index=True)
-    direction: Mapped[str] = mapped_column(String(16)); status: Mapped[str] = mapped_column(String(32), index=True); base_quantity: Mapped[Decimal] = mapped_column(price_type); remaining_quantity: Mapped[Decimal] = mapped_column(price_type)
-    average_entry: Mapped[Decimal] = mapped_column(price_type); stop_loss: Mapped[Decimal] = mapped_column(price_type); take_profit_1: Mapped[Decimal | None] = mapped_column(price_type, nullable=True); take_profit_2: Mapped[Decimal | None] = mapped_column(price_type, nullable=True); take_profit_3: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
-    realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0); unrealized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0); total_fees: Mapped[Decimal] = mapped_column(price_type, default=0)
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True)); closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    exchange: Mapped[str] = mapped_column(String(32), default="binance")
+    environment: Mapped[str] = mapped_column(String(16), index=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)
+    originating_trade_setup_id: Mapped[int] = mapped_column(
+        ForeignKey("trade_setups.id"), index=True
+    )
+    direction: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    base_quantity: Mapped[Decimal] = mapped_column(price_type)
+    remaining_quantity: Mapped[Decimal] = mapped_column(price_type)
+    average_entry: Mapped[Decimal] = mapped_column(price_type)
+    stop_loss: Mapped[Decimal] = mapped_column(price_type)
+    take_profit_1: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    take_profit_2: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    take_profit_3: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
+    total_fees: Mapped[Decimal] = mapped_column(price_type, default=0)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ExecutionEvent(Base):
     __tablename__ = "execution_events"
-    id: Mapped[int] = mapped_column(primary_key=True); severity: Mapped[str] = mapped_column(String(16)); event_type: Mapped[str] = mapped_column(String(64), index=True); exchange: Mapped[str] = mapped_column(String(32)); environment: Mapped[str] = mapped_column(String(16))
-    symbol_id: Mapped[int | None] = mapped_column(ForeignKey("symbols.id"), nullable=True); trade_setup_id: Mapped[int | None] = mapped_column(ForeignKey("trade_setups.id"), nullable=True); execution_order_id: Mapped[int | None] = mapped_column(ForeignKey("execution_orders.id"), nullable=True); live_position_id: Mapped[int | None] = mapped_column(ForeignKey("live_positions.id"), nullable=True)
-    message: Mapped[str] = mapped_column(String(1000)); metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    severity: Mapped[str] = mapped_column(String(16))
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    exchange: Mapped[str] = mapped_column(String(32))
+    environment: Mapped[str] = mapped_column(String(16))
+    symbol_id: Mapped[int | None] = mapped_column(
+        ForeignKey("symbols.id"), nullable=True
+    )
+    trade_setup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("trade_setups.id"), nullable=True
+    )
+    execution_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("execution_orders.id"), nullable=True
+    )
+    live_position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("live_positions.id"), nullable=True
+    )
+    message: Mapped[str] = mapped_column(String(1000))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
 
 
 class DailyRiskLedger(Base, TimestampMixin):
-    __tablename__ = "daily_risk_ledgers"; __table_args__ = (UniqueConstraint("trading_date", "exchange", "environment", name="uq_daily_risk_ledger"),)
-    id: Mapped[int] = mapped_column(primary_key=True); trading_date: Mapped[datetime] = mapped_column(DateTime(timezone=True)); exchange: Mapped[str] = mapped_column(String(32)); environment: Mapped[str] = mapped_column(String(16))
-    starting_equity: Mapped[Decimal] = mapped_column(price_type); current_equity: Mapped[Decimal] = mapped_column(price_type); realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0); unrealized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0); loss_pct: Mapped[Decimal] = mapped_column(Numeric(8,4), default=0)
-    orders_submitted: Mapped[int] = mapped_column(Integer, default=0); trades_opened: Mapped[int] = mapped_column(Integer, default=0); trades_closed: Mapped[int] = mapped_column(Integer, default=0); kill_switch_triggered: Mapped[bool] = mapped_column(Boolean, default=False)
+    __tablename__ = "daily_risk_ledgers"
+    __table_args__ = (
+        UniqueConstraint(
+            "trading_date", "exchange", "environment", name="uq_daily_risk_ledger"
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trading_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    exchange: Mapped[str] = mapped_column(String(32))
+    environment: Mapped[str] = mapped_column(String(16))
+    starting_equity: Mapped[Decimal] = mapped_column(price_type)
+    current_equity: Mapped[Decimal] = mapped_column(price_type)
+    realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
+    loss_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=0)
+    orders_submitted: Mapped[int] = mapped_column(Integer, default=0)
+    trades_opened: Mapped[int] = mapped_column(Integer, default=0)
+    trades_closed: Mapped[int] = mapped_column(Integer, default=0)
+    kill_switch_triggered: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BotRuntimeState(Base, TimestampMixin):
+    __tablename__ = "bot_runtime_state"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="stopped")
+    environment: Mapped[str] = mapped_column(String(16), default="testnet")
+    automatic_trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    manual_approval_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    pause_new_entries: Mapped[bool] = mapped_column(Boolean, default=True)
+    kill_switch_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled_symbols_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    enabled_timeframes_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    enabled_strategies_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    strategy_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    risk_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    stopped_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_decision_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
