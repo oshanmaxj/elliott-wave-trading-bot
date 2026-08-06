@@ -25,6 +25,8 @@ from app.models.entities import (
     ExecutionEvent,
     DailyRiskLedger,
     BotRuntimeState,
+    User,
+    AuthSession,
 )
 
 __all__ = [
@@ -54,4 +56,6 @@ __all__ = [
     "ExecutionEvent",
     "DailyRiskLedger",
     "BotRuntimeState",
+    "User",
+    "AuthSession",
 ]

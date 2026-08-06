@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from app.api.routes import router, ws_router
 from app.api.execution import router as execution_router
 from app.api.bot import router as bot_router
+from app.api.auth import router as auth_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, log_event
 from app.database.session import SessionLocal
@@ -72,6 +73,7 @@ app.include_router(router)
 app.include_router(ws_router)
 app.include_router(execution_router)
 app.include_router(bot_router)
+app.include_router(auth_router)
 
 
 @app.middleware("http")

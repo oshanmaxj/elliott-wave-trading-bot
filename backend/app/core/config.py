@@ -38,10 +38,9 @@ class Settings(BaseSettings):
     binance_production_base_url: str = "https://api.binance.com"
     execution_mode: Literal["disabled", "manual", "automatic_testnet", "live"] = "disabled"
     execution_require_manual_approval: bool = True
-    execution_admin_token: str = ""
-    execution_trader_token: str = ""
-    execution_viewer_token: str = ""
     credential_encryption_key: str = ""
+    auth_cookie_secure: bool = False
+    auth_session_hours: int = Field(default=24, ge=1, le=720)
     allow_production_orders: bool = False
     max_risk_per_trade_pct: Decimal = Field(default=Decimal("0.25"), gt=0, le=100)
     max_daily_loss_pct: Decimal = Field(default=Decimal("1.0"), gt=0, le=100)
@@ -89,6 +88,8 @@ class Settings(BaseSettings):
                 raise ValueError("production execution requires EXECUTION_MODE=live and ALLOW_PRODUCTION_ORDERS=true")
         if self.execution_mode == "automatic_testnet" and self.binance_environment != "testnet":
             raise ValueError("automatic execution is restricted to Binance Spot Testnet")
+        if self.environment == "production" and not self.auth_cookie_secure:
+            raise ValueError("AUTH_COOKIE_SECURE=true is required in production")
         return self
 
 

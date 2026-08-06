@@ -2,14 +2,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import base64
 import hashlib
-import secrets
 import time
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
+from app.auth import current_user, require_roles
 from app.database.session import get_db
 from app.execution.binance import BinanceSpotClient
 from app.market_data.binance_ws import market_stream
@@ -20,7 +20,9 @@ from app.models import (
     LivePosition,
 )
 
-router = APIRouter(prefix="/api", tags=["bot-control"])
+router = APIRouter(
+    prefix="/api", tags=["bot-control"], dependencies=[Depends(current_user)]
+)
 settings = get_settings()
 STRATEGIES = [
     "wave_3_continuation",
@@ -43,27 +45,7 @@ STRATEGIES = [
 ]
 
 
-def role(authorization: str | None = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Sign in to manage the bot")
-    token = authorization[7:]
-    for name, value in (
-        ("admin", settings.execution_admin_token),
-        ("trader", settings.execution_trader_token),
-        ("viewer", settings.execution_viewer_token),
-    ):
-        if value and secrets.compare_digest(token, value):
-            return name
-    raise HTTPException(401, "Invalid application token")
-
-
-def require(*allowed):
-    def check(current=Depends(role)):
-        if current not in allowed:
-            raise HTTPException(403, "Your role cannot perform this action")
-        return current
-
-    return check
+require = require_roles
 
 
 def state(db):

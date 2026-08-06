@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-import secrets
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
+from app.auth import current_user, require_roles
 from app.database.session import get_db
 from app.execution.binance import (
     BinanceCredentialService,
@@ -23,19 +23,13 @@ from app.models import (
     TradeSetup,
 )
 
-router = APIRouter(prefix="/api/execution", tags=["execution"])
+router = APIRouter(
+    prefix="/api/execution", tags=["execution"], dependencies=[Depends(current_user)]
+)
 settings = get_settings()
 
 
-def admin(authorization: str | None = Header(None)):
-    expected = settings.execution_admin_token
-    if (
-        not expected
-        or not authorization
-        or not authorization.startswith("Bearer ")
-        or not secrets.compare_digest(authorization[7:], expected)
-    ):
-        raise HTTPException(401, "Execution administrator authorization required")
+admin = require_roles("admin")
 
 
 def kill(db):

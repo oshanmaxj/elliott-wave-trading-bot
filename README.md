@@ -255,10 +255,11 @@ Validate the Compose file with `docker compose config`.
 WaveScope includes a testnet-first Spot execution boundary. Production trading is locked by default. There are no withdrawals, transfers, margin, futures, leverage, or guaranteed profits. Bearish signals never open short positions.
 
 1. Create a Binance Spot Testnet account at `testnet.binance.vision` and generate a trading-only API key. Never grant withdrawal permissions. Use IP restrictions when available.
-2. Copy `.env.example` to `.env`, set `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `EXECUTION_ADMIN_TOKEN`, `BINANCE_EXECUTION_ENABLED=true`, `BINANCE_ENVIRONMENT=testnet`, and `EXECUTION_MODE=manual`.
+2. Copy `.env.example` to `.env`, set a long random `CREDENTIAL_ENCRYPTION_KEY`, `BINANCE_EXECUTION_ENABLED=true`, `BINANCE_ENVIRONMENT=testnet`, and `EXECUTION_MODE=manual`. For HTTPS deployments set `AUTH_COOKIE_SECURE=true`.
 3. Deploy with `docker compose up --build`. Migrations run at API startup.
-4. Call `POST /api/execution/connect/test` with `Authorization: Bearer <EXECUTION_ADMIN_TOKEN>`. The response contains only connection status, permissions, account type, environment, and a masked key.
-5. Review `/api/execution/approval-queue`, evaluate a setup, approve it, then explicitly confirm a Testnet execution. Every submission first calls Binance `/api/v3/order/test`.
+4. Create the initial administrator after migrations with `docker compose exec backend python scripts/create_admin.py`. Enter the username/email and a unique password of at least 12 characters at the prompts; the password is hidden and is not written to shell history. For non-interactive provisioning the command also accepts temporary `WAVESCOPE_ADMIN_USERNAME` and `WAVESCOPE_ADMIN_PASSWORD` environment variables. Re-running it resets the password and revokes existing sessions.
+5. Open the frontend, sign in normally, save the Binance Spot Testnet credentials, and use the connection test. The browser receives only an HttpOnly application session cookie and a CSRF token; Binance credentials remain encrypted in the backend database.
+6. Review the approval queue, evaluate a setup, approve it, then explicitly confirm a Testnet execution. Every submission first calls Binance `/api/v3/order/test`.
 
 Risk is controlled with `MAX_RISK_PER_TRADE_PCT`, `MAX_DAILY_LOSS_PCT`, `MAX_OPEN_POSITIONS`, `MAX_SYMBOL_EXPOSURE_PCT`, `MIN_EXECUTION_CONFIDENCE`, and the symbol/strategy allowlists. The global kill switch blocks new orders but does not liquidate positions. Unknown order outcomes are persisted and reconciled by deterministic `clientOrderId`; they are never blindly retried.
 
