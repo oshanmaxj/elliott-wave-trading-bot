@@ -1,7 +1,8 @@
 from functools import lru_cache
+from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -27,8 +28,27 @@ class Settings(BaseSettings):
     analyze_historical_candles: bool = True
     enable_market_stream: bool = True
     environment: Literal["development", "test", "production"] = "development"
+    binance_execution_enabled: bool = False
+    binance_environment: Literal["testnet", "production"] = "testnet"
+    binance_api_key: str = ""
+    binance_api_secret: str = ""
+    binance_recv_window_ms: int = Field(default=5000, ge=1000, le=60000)
+    binance_max_clock_drift_ms: int = Field(default=1000, ge=0, le=60000)
+    binance_testnet_base_url: str = "https://testnet.binance.vision"
+    binance_production_base_url: str = "https://api.binance.com"
+    execution_mode: Literal["disabled", "manual", "automatic_testnet", "live"] = "disabled"
+    execution_require_manual_approval: bool = True
+    execution_admin_token: str = ""
+    allow_production_orders: bool = False
+    max_risk_per_trade_pct: Decimal = Field(default=Decimal("0.25"), gt=0, le=100)
+    max_daily_loss_pct: Decimal = Field(default=Decimal("1.0"), gt=0, le=100)
+    max_open_positions: int = Field(default=1, ge=1)
+    max_symbol_exposure_pct: Decimal = Field(default=Decimal("10"), gt=0, le=100)
+    min_execution_confidence: Decimal = Field(default=Decimal("75"), ge=0, le=100)
+    allowed_execution_symbols: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    allowed_execution_strategies: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["bullish_wave_3", "bullish_wave_5", "bullish_c_wave", "bullish_continuation", "bearish_wave_3", "bearish_wave_5", "bearish_c_wave", "bearish_continuation"])
 
-    @field_validator("default_symbols", "default_timeframes", mode="before")
+    @field_validator("default_symbols", "default_timeframes", "allowed_execution_symbols", "allowed_execution_strategies", mode="before")
     @classmethod
     def split_csv(cls, value: object) -> object:
         if isinstance(value, str):
@@ -51,6 +71,22 @@ class Settings(BaseSettings):
         if not values or not set(values) <= allowed:
             raise ValueError(f"timeframes must be a non-empty subset of {sorted(allowed)}")
         return values
+
+    @model_validator(mode="after")
+    def validate_execution_safety(self):
+        placeholders = {"changeme", "your_api_key", "your_api_secret", "placeholder", "test"}
+        if self.binance_execution_enabled and (
+            not self.binance_api_key or not self.binance_api_secret
+            or self.binance_api_key.lower() in placeholders
+            or self.binance_api_secret.lower() in placeholders
+        ):
+            raise ValueError("execution enabled with missing or placeholder Binance credentials")
+        if self.binance_environment == "production" and self.binance_execution_enabled:
+            if not (self.execution_mode == "live" and self.allow_production_orders):
+                raise ValueError("production execution requires EXECUTION_MODE=live and ALLOW_PRODUCTION_ORDERS=true")
+        if self.execution_mode == "automatic_testnet" and self.binance_environment != "testnet":
+            raise ValueError("automatic execution is restricted to Binance Spot Testnet")
+        return self
 
 
 @lru_cache

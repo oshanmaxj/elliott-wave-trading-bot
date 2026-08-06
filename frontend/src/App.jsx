@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Activity, BarChart3, BookOpen, ChartNoAxesCombined, CircleGauge, Droplets, FlaskConical, Layers3, ScrollText, Settings as SettingsIcon, Target, WalletCards, Waves } from 'lucide-react'
+import { Activity, BarChart3, BookOpen, ChartNoAxesCombined, CircleGauge, Droplets, FlaskConical, Layers3, ScrollText, Settings as SettingsIcon, Target, WalletCards, Waves, Shield, ListChecks, Landmark, Gauge } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import MarketAnalysis from './pages/MarketAnalysis'
 import { FVGZones, StructureEvents, SystemLogs } from './pages/DataPages'
@@ -8,10 +8,11 @@ import { LiquiditySweeps, TradeSetups } from './pages/OpportunityPages'
 import ElliottWave from './pages/ElliottWave'
 import { Backtests, PaperTrading, Performance } from './pages/TradingPages'
 import './trading.css'
+import {ExecutionCenter,ApprovalQueue,ExchangeOrders,LivePositions,AccountBalances,RiskControl} from './pages/ExecutionPages'
 
-const nav=[['dashboard','Overview',CircleGauge],['analysis','Market Analysis',BarChart3],['elliott','Elliott Wave',Waves],['sweeps','Liquidity Sweeps',Droplets],['setups','Trade Setups',Target],['backtests','Backtests',FlaskConical],['paper','Paper Trading',WalletCards],['performance','Performance',ChartNoAxesCombined],['structure','Structure Events',Activity],['fvg','FVG Zones',Layers3],['logs','System Logs',ScrollText],['settings','Settings',SettingsIcon]]
+const nav=[['dashboard','Overview',CircleGauge],['analysis','Market Analysis',BarChart3],['elliott','Elliott Wave',Waves],['sweeps','Liquidity Sweeps',Droplets],['setups','Trade Setups',Target],['backtests','Backtests',FlaskConical],['paper','Paper Trading',WalletCards],['performance','Performance',ChartNoAxesCombined],['execution','Execution Center',Shield],['approvals','Approval Queue',ListChecks],['orders','Exchange Orders',Landmark],['positions','Live Positions',Activity],['account','Account & Balances',WalletCards],['risk','Risk Control',Gauge],['structure','Structure Events',Activity],['fvg','FVG Zones',Layers3],['logs','System Logs',ScrollText],['settings','Settings',SettingsIcon]]
 export default function App(){
   const [page,setPage]=useState('dashboard')
-  const pages={dashboard:<Dashboard navigate={setPage}/>,analysis:<MarketAnalysis/>,elliott:<ElliottWave/>,sweeps:<LiquiditySweeps/>,setups:<TradeSetups/>,backtests:<Backtests/>,paper:<PaperTrading/>,performance:<Performance/>,structure:<StructureEvents/>,fvg:<FVGZones/>,logs:<SystemLogs/>,settings:<Settings/>}
+  const pages={dashboard:<Dashboard navigate={setPage}/>,analysis:<MarketAnalysis/>,elliott:<ElliottWave/>,sweeps:<LiquiditySweeps/>,setups:<TradeSetups/>,backtests:<Backtests/>,paper:<PaperTrading/>,performance:<Performance/>,execution:<ExecutionCenter/>,approvals:<ApprovalQueue/>,orders:<ExchangeOrders/>,positions:<LivePositions/>,account:<AccountBalances/>,risk:<RiskControl/>,structure:<StructureEvents/>,fvg:<FVGZones/>,logs:<SystemLogs/>,settings:<Settings/>}
   return <div className="shell"><aside><div className="brand"><div className="mark"><BookOpen size={19}/></div><div><strong>WaveScope</strong><small>MARKET INTELLIGENCE</small></div></div><nav>{nav.map(([id,label,Icon])=><button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={17}/>{label}</button>)}</nav><div className="aside-foot"><span><i/> ANALYSIS ONLINE</span><small>Paper only · No live orders</small></div></aside><main>{pages[page]}</main></div>
 }

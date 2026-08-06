@@ -250,3 +250,20 @@ Validate the Compose file with `docker compose config`.
 5. Add walk-forward backtesting, dataset/version tracking, feature provenance, and model calibration.
 6. Add alerting, metrics, traces, retention policies, backups, and deployment manifests.
 7. Add authenticated users and role-based controls before any future exchange execution work.
+# Binance Spot Testnet execution (Phase 6)
+
+WaveScope includes a testnet-first Spot execution boundary. Production trading is locked by default. There are no withdrawals, transfers, margin, futures, leverage, or guaranteed profits. Bearish signals never open short positions.
+
+1. Create a Binance Spot Testnet account at `testnet.binance.vision` and generate a trading-only API key. Never grant withdrawal permissions. Use IP restrictions when available.
+2. Copy `.env.example` to `.env`, set `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `EXECUTION_ADMIN_TOKEN`, `BINANCE_EXECUTION_ENABLED=true`, `BINANCE_ENVIRONMENT=testnet`, and `EXECUTION_MODE=manual`.
+3. Deploy with `docker compose up --build`. Migrations run at API startup.
+4. Call `POST /api/execution/connect/test` with `Authorization: Bearer <EXECUTION_ADMIN_TOKEN>`. The response contains only connection status, permissions, account type, environment, and a masked key.
+5. Review `/api/execution/approval-queue`, evaluate a setup, approve it, then explicitly confirm a Testnet execution. Every submission first calls Binance `/api/v3/order/test`.
+
+Risk is controlled with `MAX_RISK_PER_TRADE_PCT`, `MAX_DAILY_LOSS_PCT`, `MAX_OPEN_POSITIONS`, `MAX_SYMBOL_EXPOSURE_PCT`, `MIN_EXECUTION_CONFIDENCE`, and the symbol/strategy allowlists. The global kill switch blocks new orders but does not liquidate positions. Unknown order outcomes are persisted and reconciled by deterministic `clientOrderId`; they are never blindly retried.
+
+Production requires all of `BINANCE_EXECUTION_ENABLED=true`, `BINANCE_ENVIRONMENT=production`, `EXECUTION_MODE=live`, and `ALLOW_PRODUCTION_ORDERS=true`, but Phase 6 API submission remains explicitly locked to Testnet. Roll back by enabling the kill switch, canceling appropriate outstanding entry orders, setting `BINANCE_EXECUTION_ENABLED=false`, and redeploying. Do not downgrade the database while execution records are needed for reconciliation.
+
+Optional connection-only smoke test: from `backend`, set `RUN_BINANCE_TESTNET_SMOKE=true` and run `python scripts/binance_testnet_smoke.py`. It sends no order unless `RUN_BINANCE_ORDER_TEST=true`; even then it uses Binance's validation endpoint only.
+
+Known limitations: exchange-native OCO/protective exit automation and the Binance user-data stream worker are not enabled in this initial guarded slice; positions must not be treated as fully protected until those components are deployed and monitored. Production execution remains locked.
