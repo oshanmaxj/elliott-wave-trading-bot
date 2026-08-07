@@ -21,6 +21,15 @@ def make_client(session_factory, monkeypatch):
     config.model_copy = lambda update: SimpleNamespace(**{**vars(config), **update})
     monkeypatch.setattr(bot, "settings", config)
     monkeypatch.setattr(auth_api, "settings", config)
+    monkeypatch.setattr(
+        bot,
+        "user_stream",
+        SimpleNamespace(
+            restart=lambda: _done(True),
+            stop=lambda: _done(None),
+            status=lambda: {"running": False, "connected": False},
+        ),
+    )
     app = FastAPI()
     app.include_router(auth_api.router)
     app.include_router(bot.router)
@@ -40,6 +49,10 @@ def make_client(session_factory, monkeypatch):
             )
         )
     return TestClient(app)
+
+
+async def _done(value):
+    return value
 
 
 def login(api, password="correct horse battery staple"):

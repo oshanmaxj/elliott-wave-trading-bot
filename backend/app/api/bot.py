@@ -1,9 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-import base64
-import hashlib
 import time
-from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -12,6 +9,8 @@ from app.core.config import get_settings
 from app.auth import current_user, require_roles
 from app.database.session import get_db
 from app.execution.binance import BinanceSpotClient
+from app.execution.credentials import credential_cipher, load_stored_settings
+from app.services.binance_user_stream import user_stream
 from app.market_data.binance_ws import market_stream
 from app.models import (
     BotRuntimeState,
@@ -109,6 +108,7 @@ def bot_status(db: Session = Depends(get_db)):
         "connected": bool(account and account.status == "connected"),
         "masked_api_key": account.masked_api_key if account else "",
         "market_stream": market_stream.status(),
+        "user_stream": user_stream.status(),
         "production_locked": not (
             settings.binance_execution_enabled
             and settings.binance_environment == "production"
@@ -252,18 +252,7 @@ def strategy_performance():
 
 
 def cipher():
-    if (
-        not settings.credential_encryption_key
-        or len(settings.credential_encryption_key) < 32
-    ):
-        raise HTTPException(
-            503,
-            "Credential encryption is not configured. Set a persistent CREDENTIAL_ENCRYPTION_KEY of at least 32 characters and restart the backend.",
-        )
-    key = base64.urlsafe_b64encode(
-        hashlib.sha256(settings.credential_encryption_key.encode()).digest()
-    )
-    return Fernet(key)
+    return credential_cipher(settings)
 
 
 class Credentials(BaseModel):
@@ -275,7 +264,7 @@ class Credentials(BaseModel):
 
 @router.post("/binance/credentials")
 @router.put("/binance/credentials")
-def credentials(
+async def credentials(
     body: Credentials, db: Session = Depends(get_db), current=Depends(require("admin"))
 ):
     if body.environment == "production":
@@ -291,6 +280,7 @@ def credentials(
     row.status = "saved"
     db.add(row)
     db.commit()
+    await user_stream.restart()
     event(
         db,
         "binance_credentials_saved",
@@ -305,7 +295,7 @@ def credentials(
 
 
 @router.delete("/binance/credentials")
-def delete_credentials(
+async def delete_credentials(
     db: Session = Depends(get_db), current=Depends(require("admin"))
 ):
     row = db.scalar(select(ExchangeAccount).order_by(ExchangeAccount.id.desc()))
@@ -315,6 +305,7 @@ def delete_credentials(
         row.masked_api_key = ""
         row.status = "disconnected"
         db.commit()
+    await user_stream.stop()
     event(
         db,
         "binance_credentials_disconnected",
@@ -324,26 +315,7 @@ def delete_credentials(
 
 
 def stored_settings(db):
-    row = db.scalar(
-        select(ExchangeAccount)
-        .where(ExchangeAccount.encrypted_api_key.is_not(None))
-        .order_by(ExchangeAccount.id.desc())
-    )
-    if not row:
-        raise HTTPException(404, "No Binance credentials saved")
-    try:
-        f = cipher()
-        key = f.decrypt(row.encrypted_api_key.encode()).decode()
-        secret = f.decrypt(row.encrypted_api_secret.encode()).decode()
-    except InvalidToken:
-        raise HTTPException(500, "Stored credentials cannot be decrypted")
-    return row, settings.model_copy(
-        update={
-            "binance_environment": row.environment,
-            "binance_api_key": key,
-            "binance_api_secret": secret,
-        }
-    )
+    return load_stored_settings(db, settings)
 
 
 @router.get("/binance/connection/status")

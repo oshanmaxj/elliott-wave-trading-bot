@@ -20,6 +20,7 @@ from app.market_data.binance_ws import market_stream
 from app.repositories.market import ensure_symbol
 from app.models import BacktestRun
 from app.services.historical_backfill import historical_backfill
+from app.services.binance_user_stream import user_stream
 
 config = get_settings()
 configure_logging(config.log_level)
@@ -47,9 +48,11 @@ async def lifespan(app: FastAPI):
             )
         if config.enable_market_stream:
             tasks.append(asyncio.create_task(market_stream.run(), name="market-stream"))
+        await user_stream.start()
         app.state.background_tasks = tasks
         yield
     finally:
+        await user_stream.stop()
         await market_stream.stop()
         for task in tasks:
             task.cancel()

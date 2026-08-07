@@ -70,6 +70,7 @@ from app.schemas.common import (
 )
 from app.services.analysis_backfill import AnalysisBackfillService, backfill_status
 from app.services.broadcast import broadcaster
+from app.services.binance_user_stream import user_stream
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
@@ -103,7 +104,11 @@ def validate_timeframe(value: str) -> str:
 @router.get("/health")
 def health(db: Session = Depends(get_db)):
     db.execute(select(1))
-    return {"status": "healthy", "market_stream": market_stream.status()}
+    return {
+        "status": "healthy",
+        "market_stream": market_stream.status(),
+        "user_stream": user_stream.status(),
+    }
 
 
 @router.get("/symbols", response_model=list[SymbolOut])
