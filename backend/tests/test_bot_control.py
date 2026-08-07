@@ -10,7 +10,7 @@ from app.models import ExchangeAccount, User
 
 def make_client(session_factory, monkeypatch):
     config = SimpleNamespace(
-        credential_encryption_key="test-encryption-key",
+        credential_encryption_key="test-encryption-key-that-is-stable-32",
         binance_execution_enabled=False,
         binance_environment="testnet",
         execution_mode="disabled",
@@ -90,13 +90,15 @@ def test_binance_credentials_encrypted_secret_never_returned(
     session_factory, monkeypatch
 ):
     api = make_client(session_factory, monkeypatch)
-    login(api)
     raw = {
         "environment": "testnet",
         "api_key": "abcdefghAB12",
         "api_secret": "super-secret-value",
         "label": "test",
     }
+    assert api.post("/api/binance/credentials", json=raw).status_code == 401
+    login(api)
+    assert api.post("/api/binance/credentials", json=raw).status_code == 403
     response = api.post("/api/binance/credentials", headers=csrf(api), json=raw)
     assert (
         response.status_code == 200
@@ -110,6 +112,21 @@ def test_binance_credentials_encrypted_secret_never_returned(
             and row.encrypted_api_secret != raw["api_secret"]
             and row.masked_api_key.endswith("AB12")
         )
+    status = api.get("/api/binance/connection/status").json()
+    assert status["credentials_saved"] is True
+    assert status["connected"] is False
+    assert status["masked_api_key"].endswith("AB12")
+    assert raw["api_secret"] not in str(status)
+    with session_factory() as db:
+        _, restored = bot.stored_settings(db)
+        assert restored.binance_api_key == raw["api_key"]
+        assert restored.binance_api_secret == raw["api_secret"]
+    logout_csrf = csrf(api)
+    assert api.post("/api/auth/logout", headers=logout_csrf).status_code == 200
+    assert (
+        api.post("/api/binance/credentials", headers=logout_csrf, json=raw).status_code
+        == 401
+    )
 
 
 def test_authenticated_binance_connection_test(session_factory, monkeypatch):

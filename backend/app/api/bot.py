@@ -252,8 +252,14 @@ def strategy_performance():
 
 
 def cipher():
-    if not settings.credential_encryption_key:
-        raise HTTPException(503, "CREDENTIAL_ENCRYPTION_KEY is not configured")
+    if (
+        not settings.credential_encryption_key
+        or len(settings.credential_encryption_key) < 32
+    ):
+        raise HTTPException(
+            503,
+            "Credential encryption is not configured. Set a persistent CREDENTIAL_ENCRYPTION_KEY of at least 32 characters and restart the backend.",
+        )
     key = base64.urlsafe_b64encode(
         hashlib.sha256(settings.credential_encryption_key.encode()).digest()
     )
@@ -345,11 +351,19 @@ def connection_status(db: Session = Depends(get_db)):
     row = db.scalar(select(ExchangeAccount).order_by(ExchangeAccount.id.desc()))
     return {
         "connected": bool(row and row.status == "connected"),
+        "credentials_saved": bool(
+            row and row.encrypted_api_key and row.encrypted_api_secret
+        ),
+        "account_status": row.status if row else "disconnected",
         "environment": row.environment if row else "testnet",
         "masked_api_key": row.masked_api_key if row else "",
         "label": row.label if row else None,
         "permissions": row.permissions_json if row else {},
         "last_tested_at": row.last_connected_at if row else None,
+        "encryption_configured": bool(
+            settings.credential_encryption_key
+            and len(settings.credential_encryption_key) >= 32
+        ),
     }
 
 
