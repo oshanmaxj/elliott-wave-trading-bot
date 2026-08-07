@@ -22,7 +22,7 @@ export const getMarketBundle = async (symbol, timeframe) => {
     api.get('/liquidity', { params }), api.get('/order-blocks', { params }),
     safe(api.get('/premium-discount', { params })), safe(api.get('/market-bias', { params: { symbol } })),
     safe(api.get('/structure-score', { params })),
-    api.get('/liquidity-sweeps', { params }), api.get('/trade-setups', { params: { symbol } }),
+    api.get('/liquidity-sweeps', { params }), api.get('/trade-setups', { params }),
     api.get('/elliott-wave/counts', { params: { ...params, limit: 20 } }), api.get('/elliott-wave/context', { params: { symbol } }),
   ])
   return { candles: candles.data, swings: swings.data, structure: structure.data, fvg: fvg.data, analysis: analysis.data, liquidity: liquidity.data, orderBlocks: orderBlocks.data, premiumDiscount: premiumDiscount.data, bias: bias.data, score: score.data, sweeps: sweeps.data, setups: setups.data.filter(x => x.setup_timeframe === timeframe), waveCounts: waveCounts.data, waveContext: waveContext.data }

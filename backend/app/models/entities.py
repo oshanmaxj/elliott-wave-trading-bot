@@ -648,6 +648,9 @@ class ExecutionOrder(Base, TimestampMixin):
         ForeignKey("trade_setups.id"), index=True
     )
     client_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    setup_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
+    )
     exchange_order_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )

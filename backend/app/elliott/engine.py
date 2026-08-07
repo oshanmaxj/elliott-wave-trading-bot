@@ -238,7 +238,7 @@ def validate_zigzag(
 
 
 def assign_degree(timeframe: str, points: list[Any], atr: float | None = None) -> str:
-    base = {"15m": 0, "1h": 1, "4h": 2}.get(timeframe, 0)
+    base = {"1m": 0, "5m": 0, "15m": 0, "1h": 1, "4h": 2}.get(timeframe, 0)
     strength = sum(float(point.strength) for point in points) / max(len(points), 1)
     movement = (
         abs(float(points[-1].price - points[0].price))

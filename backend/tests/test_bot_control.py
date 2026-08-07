@@ -89,11 +89,17 @@ def test_protection_csrf_logout_and_authorization(session_factory, monkeypatch):
             headers=csrf(api),
             json={
                 "enabled_symbols_json": ["BTCUSDT"],
+                "enabled_timeframes_json": ["1m", "5m", "15m"],
                 "enabled_strategies_json": ["wave_3_continuation"],
             },
         ).status_code
         == 200
     )
+    assert api.get("/api/bot/config").json()["enabled_timeframes_json"] == [
+        "1m",
+        "5m",
+        "15m",
+    ]
     assert api.post("/api/bot/start", headers=csrf(api)).json()["status"] == "running"
     assert api.post("/api/auth/logout", headers=csrf(api)).status_code == 200
     assert api.get("/api/auth/me").status_code == 401

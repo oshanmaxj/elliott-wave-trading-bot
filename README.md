@@ -52,8 +52,10 @@ Stop services with `docker compose down`. To also remove persisted development d
 | `BINANCE_REST_BASE_URL` | Public futures REST origin | `https://fapi.binance.com` |
 | `BINANCE_WS_BASE_URL` | Public combined stream origin | `wss://fstream.binance.com/stream` |
 | `DEFAULT_SYMBOLS` | Allowed enabled symbols | `BTCUSDT,ETHUSDT` |
-| `DEFAULT_TIMEFRAMES` | Enabled intervals | `15m,1h,4h` |
+| `DEFAULT_TIMEFRAMES` | Public market-data intervals | `1m,5m,15m,1h,4h` |
 | `HISTORICAL_CANDLE_LIMIT` | Initial candle target per stream | `500` |
+| `HISTORY_DAYS_1M` / `HISTORY_DAYS_5M` | Lower-timeframe retention | `30` / `90` |
+| `HISTORY_DAYS_15M` / `HISTORY_DAYS_1H` / `HISTORY_DAYS_4H` | Existing retention | `180` / `365` / `730` |
 | `LOG_LEVEL` | Application log level | `INFO` |
 | `API_HOST` / `API_PORT` | Backend bind address | `0.0.0.0` / `8000` |
 | `FRONTEND_URL` | Exact CORS origin | `http://localhost:5173` |
@@ -100,7 +102,7 @@ docker compose run --rm backend alembic revision --autogenerate -m "describe cha
 
 ## Historical synchronization
 
-Startup automatically synchronizes all six configured symbol/timeframe streams. Trigger a bounded synchronization manually:
+Startup schedules retention-aware synchronization for all configured symbol/timeframe streams. With the defaults this is ten streams (two symbols × five timeframes). The 1m and 5m defaults are deliberately limited to 30 and 90 days. Trigger a bounded synchronization manually:
 
 ```bash
 curl -X POST http://localhost:8000/api/market-data/sync \
@@ -211,7 +213,7 @@ Validate the Compose file with `docker compose config`.
 1. Run `docker compose up --build` and wait for all four services to become healthy.
 2. Open `/api/symbols`; confirm BTCUSDT and ETHUSDT.
 3. Open `/api/candles?symbol=BTCUSDT&timeframe=1h&limit=10`; confirm ordered, fixed-precision candle data.
-4. Check `/api/market-data/status`; confirm six combined streams (two symbols × three timeframes), a recent message time, and `connected: true`.
+4. Check `/api/market-data/status`; confirm ten unique combined streams (two symbols × five timeframes), a recent message time, and `connected: true`.
 5. Inspect PostgreSQL and confirm candles are unique by symbol/timeframe/open time.
 6. Open Market Analysis, switch symbols/timeframes, and confirm candles, EMAs, swing markers, BOS/CHoCH markers, and FVG bounds load from the backend.
 7. Keep the dashboard open through a candle update and confirm the live indicator remains online and data refreshes at candle close.

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
+from app.core.constants import SUPPORTED_TIMEFRAMES
 from app.auth import current_user, require_roles
 from app.database.session import get_db
 from app.execution.binance import BinanceSpotClient
@@ -140,7 +141,7 @@ def put_config(
     ):
         if key in body:
             setattr(row, key, body[key])
-    if not set(row.enabled_timeframes_json) <= {"15m", "1h", "4h"}:
+    if not row.enabled_timeframes_json or not set(row.enabled_timeframes_json) <= SUPPORTED_TIMEFRAMES:
         raise HTTPException(422, "Unsupported timeframe")
     if not set(row.enabled_strategies_json) <= set(STRATEGIES):
         raise HTTPException(422, "Unsupported strategy")

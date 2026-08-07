@@ -13,7 +13,7 @@ from fastapi import (
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, TIMEFRAME_MS
+from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, TIMEFRAME_MS, TIMEFRAMES
 from app.core.logging import log_event
 from app.database.session import get_db
 from app.market_data.binance_ws import market_stream
@@ -341,7 +341,7 @@ def premium_discount_zones(symbol: str, timeframe: str, db: Session = Depends(ge
 def market_bias(symbol: str, db: Session = Depends(get_db)):
     symbol_row = resolve_symbol(db, symbol)
     trends = {}
-    for timeframe in ("4h", "1h", "15m"):
+    for timeframe in reversed(TIMEFRAMES):
         snapshot = db.scalar(
             select(AnalysisSnapshot)
             .where(
@@ -466,6 +466,7 @@ def liquidity_sweep_detail(sweep_id: int, db: Session = Depends(get_db)):
 @router.get("/trade-setups", response_model=list[TradeSetupOut])
 def trade_setups(
     symbol: str,
+    timeframe: str | None = None,
     direction: str | None = Query(None, pattern="^(bullish|bearish)$"),
     strategy: str | None = Query(
         None,
@@ -481,12 +482,16 @@ def trade_setups(
     db: Session = Depends(get_db),
 ):
     symbol_row = resolve_symbol(db, symbol)
+    if timeframe:
+        validate_timeframe(timeframe)
     query = select(TradeSetup).where(
         TradeSetup.symbol_id == symbol_row.id,
         TradeSetup.confidence_score >= minimum_confidence,
     )
     if direction:
         query = query.where(TradeSetup.direction == direction)
+    if timeframe:
+        query = query.where(TradeSetup.setup_timeframe == timeframe)
     if strategy:
         query = query.where(TradeSetup.strategy == strategy)
     if setup_status:
@@ -945,7 +950,7 @@ def elliott_recalculate(body: ElliottRecalculateRequest):
 def elliott_context(symbol: str, db: Session = Depends(get_db)):
     symbol_row = resolve_symbol(db, symbol)
     context = {}
-    for timeframe in ("4h", "1h", "15m"):
+    for timeframe in reversed(TIMEFRAMES):
         row = db.scalar(
             select(ElliottWaveCount)
             .where(

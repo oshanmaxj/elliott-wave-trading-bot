@@ -1,6 +1,7 @@
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import hashlib
 from sqlalchemy import func, select
 from app.execution.filters import (
     floor_quantity_to_step,
@@ -8,7 +9,16 @@ from app.execution.filters import (
     validate_notional,
     validate_symbol_tradeability,
 )
-from app.models import ExecutionOrder, LivePosition
+from app.models import BotRuntimeState, ExecutionOrder, LivePosition
+
+
+def setup_fingerprint(symbol: str, setup, window_minutes: int = 15) -> str:
+    detected = setup.detected_at
+    if detected.tzinfo is None:
+        detected = detected.replace(tzinfo=timezone.utc)
+    bucket = int(detected.timestamp()) // (window_minutes * 60)
+    identity = f"{symbol.upper()}|{setup.strategy}|{setup.direction}|{bucket}"
+    return hashlib.sha256(identity.encode()).hexdigest()
 
 
 @dataclass
@@ -67,6 +77,12 @@ class ExecutionRiskEngine:
             reasons.append("symbol_not_allowed")
         if setup.strategy not in self.s.allowed_execution_strategies:
             reasons.append("strategy_not_allowed")
+        runtime = db.scalar(select(BotRuntimeState).limit(1))
+        enabled_timeframes = (
+            runtime.enabled_timeframes_json if runtime else ["15m", "1h", "4h"]
+        )
+        if setup.setup_timeframe not in enabled_timeframes:
+            reasons.append("timeframe_not_enabled")
         if setup.status not in {"ready", "eligible", "approved", "pending_approval"}:
             reasons.append("setup_not_eligible")
         if setup.confidence_score < self.s.min_execution_confidence:
@@ -85,6 +101,13 @@ class ExecutionRiskEngine:
             .limit(1)
         ):
             reasons.append("setup_already_executed")
+        fingerprint = setup_fingerprint(symbol.symbol, setup)
+        if db.scalar(
+            select(ExecutionOrder.id)
+            .where(ExecutionOrder.setup_fingerprint == fingerprint)
+            .limit(1)
+        ):
+            reasons.append("duplicate_setup_window")
         if not entry or not stop or entry == stop:
             reasons.append("invalid_stop_distance")
         if (

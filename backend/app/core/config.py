@@ -5,6 +5,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.core.constants import SUPPORTED_TIMEFRAMES, TIMEFRAMES
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
@@ -14,8 +16,10 @@ class Settings(BaseSettings):
     binance_rest_base_url: str = "https://fapi.binance.com"
     binance_ws_base_url: str = "wss://fstream.binance.com/stream"
     default_symbols: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
-    default_timeframes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["15m", "1h", "4h"])
+    default_timeframes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(TIMEFRAMES))
     historical_candle_limit: int = Field(default=500, ge=10, le=1500)
+    history_days_1m: int = Field(default=30, ge=1)
+    history_days_5m: int = Field(default=90, ge=1)
     history_days_15m: int = Field(default=180, ge=1)
     history_days_1h: int = Field(default=365, ge=1)
     history_days_4h: int = Field(default=730, ge=1)
@@ -69,9 +73,8 @@ class Settings(BaseSettings):
     @field_validator("default_timeframes")
     @classmethod
     def validate_timeframes(cls, values: list[str]) -> list[str]:
-        allowed = {"15m", "1h", "4h"}
-        if not values or not set(values) <= allowed:
-            raise ValueError(f"timeframes must be a non-empty subset of {sorted(allowed)}")
+        if not values or not set(values) <= SUPPORTED_TIMEFRAMES:
+            raise ValueError(f"timeframes must be a non-empty subset of {list(TIMEFRAMES)}")
         return values
 
     @model_validator(mode="after")

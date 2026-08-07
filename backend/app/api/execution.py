@@ -12,7 +12,7 @@ from app.execution.binance import (
     BinanceError,
     BinanceSpotClient,
 )
-from app.execution.service import ExecutionRiskEngine, client_order_id
+from app.execution.service import ExecutionRiskEngine, client_order_id, setup_fingerprint
 from app.models import (
     DailyRiskLedger,
     ExchangeAccount,
@@ -188,6 +188,7 @@ async def execute(setup_id: int, db: Session = Depends(get_db)):
         symbol_id=symbol.id,
         trade_setup_id=setup.id,
         client_order_id=cid,
+        setup_fingerprint=setup_fingerprint(symbol.symbol, setup),
         side="BUY",
         order_type="MARKET",
         requested_quantity=decision.adjusted_quantity,

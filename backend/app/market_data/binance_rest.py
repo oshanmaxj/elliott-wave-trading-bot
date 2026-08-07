@@ -5,7 +5,7 @@ from decimal import Decimal
 import httpx
 
 from app.core.config import get_settings
-from app.core.constants import TIMEFRAME_MS
+from app.core.constants import BINANCE_INTERVALS, TIMEFRAME_MS
 from app.schemas.common import CandleData
 
 
@@ -71,7 +71,7 @@ class BinanceRESTClient:
             return Decimal(response.json()["price"])
 
     async def fetch_historical_klines(self, symbol: str, timeframe: str, start_time: datetime | None = None, end_time: datetime | None = None, limit: int = 500) -> list[CandleData]:
-        params = {"symbol": symbol, "interval": timeframe, "limit": min(limit, 1500)}
+        params = {"symbol": symbol, "interval": BINANCE_INTERVALS[timeframe], "limit": min(limit, 1500)}
         if start_time:
             params["startTime"] = milliseconds(start_time)
         if end_time:

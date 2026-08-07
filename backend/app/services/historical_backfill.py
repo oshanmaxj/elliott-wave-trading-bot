@@ -53,6 +53,8 @@ class HistoricalBackfillService:
     def retention_days(self, timeframe: str) -> int:
         config = get_settings()
         return {
+            "1m": config.history_days_1m,
+            "5m": config.history_days_5m,
             "15m": config.history_days_15m,
             "1h": config.history_days_1h,
             "4h": config.history_days_4h,

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from app.core.constants import TIMEFRAME_BIAS_WEIGHTS
+
 
 @dataclass(frozen=True)
 class LiquiditySignal:
@@ -100,8 +102,13 @@ def structure_score(trend: str, latest_event: Any | None, liquidity_count: int, 
 
 
 def multi_timeframe_bias(trends: dict[str, str]) -> dict[str, Any]:
-    weights = {"4h": 3, "1h": 2, "15m": 1}
+    weights = TIMEFRAME_BIAS_WEIGHTS
     value = sum(weights[tf] * (1 if trends.get(tf) == "bullish" else -1 if trends.get(tf) == "bearish" else 0) for tf in weights)
-    aligned = len({trends.get(tf) for tf in weights}) == 1 and trends.get("4h") in {"bullish", "bearish"}
-    label = ("Strong Bullish Alignment" if value > 0 else "Strong Bearish Alignment") if aligned else "Bullish Bias" if value >= 2 else "Bearish Bias" if value <= -2 else "Neutral / Mixed"
+    directional = [trends.get(tf) for tf in weights if trends.get(tf) in {"bullish", "bearish"}]
+    aligned = bool(directional) and len(set(directional)) == 1 and trends.get("4h") in {"bullish", "bearish"}
+    macro = trends.get("4h")
+    macro_conflict = macro in {"bullish", "bearish"} and any(
+        trend != macro for trend in directional[1:]
+    )
+    label = ("Strong Bullish Alignment" if value > 0 else "Strong Bearish Alignment") if aligned else "Neutral / Mixed" if macro_conflict and abs(value) < weights["4h"] else "Bullish Bias" if value >= 2 else "Bearish Bias" if value <= -2 else "Neutral / Mixed"
     return {"timeframes": trends, "score": value, "label": label, "aligned": aligned}

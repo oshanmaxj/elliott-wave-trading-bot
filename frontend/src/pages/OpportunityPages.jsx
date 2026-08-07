@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { TIMEFRAMES } from '../constants'
 import { formatDisplayValue, formatNumber } from '../format'
 
 const Safety=()=> <div className="paper-banner"><strong>PAPER ANALYSIS ONLY</strong><span>NO LIVE ORDER EXECUTION · Setups express deterministic bias and confidence, never guaranteed profit.</span></div>
@@ -9,7 +10,7 @@ const Field=({label,value})=><span>{label}<strong>{formatDisplayValue(value)}</s
 export function LiquiditySweeps(){
   const [symbol,setSymbol]=useState('BTCUSDT'),[timeframe,setTimeframe]=useState('15m'),[rows,setRows]=useState([])
   useEffect(()=>{api.get('/liquidity-sweeps',{params:{symbol,timeframe,limit:500}}).then(r=>setRows(r.data))},[symbol,timeframe])
-  return <><div className="page-head"><div><p className="eyebrow">LIQUIDITY ENGINE</p><h1>Liquidity Sweeps</h1></div><div className="controls"><select value={symbol} onChange={e=>setSymbol(e.target.value)}><option>BTCUSDT</option><option>ETHUSDT</option></select><select value={timeframe} onChange={e=>setTimeframe(e.target.value)}><option>15m</option><option>1h</option><option>4h</option></select></div></div><Safety/><section className="panel table-wrap"><table><thead><tr>{['Detected','Direction','Type','Liquidity','Extreme','Reclaim','Status','Confidence','Pool'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(row=><tr key={row.id}><Cell value={row.detected_at}/><Cell value={row.direction}/><Cell value={row.sweep_type}/><Cell value={row.liquidity_price} numeric/><Cell value={row.extreme_price} numeric/><Cell value={row.reclaimed_price} numeric/><Cell value={row.status}/><Cell value={row.confidence_score} numeric/><Cell value={row.liquidity_pool_id}/></tr>)}</tbody></table>{!rows.length&&<p className="empty">No causal liquidity sweeps detected yet.</p>}</section></>
+  return <><div className="page-head"><div><p className="eyebrow">LIQUIDITY ENGINE</p><h1>Liquidity Sweeps</h1></div><div className="controls"><select value={symbol} onChange={e=>setSymbol(e.target.value)}><option>BTCUSDT</option><option>ETHUSDT</option></select><select value={timeframe} onChange={e=>setTimeframe(e.target.value)}>{TIMEFRAMES.map(x=><option key={x}>{x}</option>)}</select></div></div><Safety/><section className="panel table-wrap"><table><thead><tr>{['Detected','Direction','Type','Liquidity','Extreme','Reclaim','Status','Confidence','Pool'].map(x=><th key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(row=><tr key={row.id}><Cell value={row.detected_at}/><Cell value={row.direction}/><Cell value={row.sweep_type}/><Cell value={row.liquidity_price} numeric/><Cell value={row.extreme_price} numeric/><Cell value={row.reclaimed_price} numeric/><Cell value={row.status}/><Cell value={row.confidence_score} numeric/><Cell value={row.liquidity_pool_id}/></tr>)}</tbody></table>{!rows.length&&<p className="empty">No causal liquidity sweeps detected yet.</p>}</section></>
 }
 
 const SetupDrawer=({detail,close})=>{

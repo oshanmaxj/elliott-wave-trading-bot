@@ -6,6 +6,7 @@ from decimal import Decimal
 import websockets
 
 from app.core.config import get_settings
+from app.core.constants import BINANCE_INTERVALS
 from app.core.logging import log_event
 from app.database.session import SessionLocal
 from app.repositories.market import ensure_symbol, upsert_candle
@@ -27,7 +28,12 @@ class BinanceWebSocketManager:
 
     @property
     def streams(self) -> list[str]:
-        return [f"{symbol.lower()}@kline_{timeframe}" for symbol in self.settings.default_symbols for timeframe in self.settings.default_timeframes]
+        streams = (
+            f"{symbol.lower()}@kline_{BINANCE_INTERVALS[timeframe]}"
+            for symbol in self.settings.default_symbols
+            for timeframe in self.settings.default_timeframes
+        )
+        return list(dict.fromkeys(streams))
 
     def status(self) -> dict:
         uptime = (datetime.now(timezone.utc) - self.connected_at).total_seconds() if self.connected_at else None

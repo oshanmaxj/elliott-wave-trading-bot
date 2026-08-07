@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from app.core.constants import TIMEFRAME_ANALYSIS_PROFILES, TIMEFRAMES
 from app.database.session import SessionLocal
 from app.fvg.detector import FVGConfig, detect_fvg, mitigation_update
 from app.indicators.service import calculate_indicators
@@ -111,6 +112,19 @@ async def process_closed_candle(
         if not candle or not candle.is_closed:
             return {"processed": False, "reason": "candle_not_closed"}
         settings = get_runtime_settings(db)
+        profile = TIMEFRAME_ANALYSIS_PROFILES[candle.timeframe]
+        settings = settings.model_copy(
+            update={
+                "swing_left_bars": max(settings.swing_left_bars, profile["minimum_swing_bars"]),
+                "swing_right_bars": max(settings.swing_right_bars, profile["minimum_swing_bars"]),
+                "minimum_fvg_atr_size": settings.minimum_fvg_atr_size * profile["fvg_atr_multiplier"],
+                **{
+                    key: max(getattr(settings, key), value)
+                    for key, value in profile.items()
+                    if key in {"sweep_confirmation_candles", "sweep_expiry_candles", "setup_expiry_candles"}
+                },
+            }
+        )
         candles = list(
             db.scalars(
                 select(Candle)
@@ -313,16 +327,24 @@ async def process_closed_candle(
                 db.add(pool)
                 db.flush()
                 events.append(("liquidity_new", serialize(pool)))
-        htf_snapshot = db.scalar(
-            select(AnalysisSnapshot)
-            .where(
-                AnalysisSnapshot.symbol_id == candle.symbol_id,
-                AnalysisSnapshot.timeframe == "4h",
-                AnalysisSnapshot.generated_at <= candle.close_time,
+        timeframe_index = TIMEFRAMES.index(candle.timeframe)
+        higher_candidates = TIMEFRAMES[timeframe_index + 1 :]
+        htf_snapshot = None
+        htf_timeframe = candle.timeframe
+        for candidate_timeframe in higher_candidates:
+            htf_snapshot = db.scalar(
+                select(AnalysisSnapshot)
+                .where(
+                    AnalysisSnapshot.symbol_id == candle.symbol_id,
+                    AnalysisSnapshot.timeframe == candidate_timeframe,
+                    AnalysisSnapshot.generated_at <= candle.close_time,
+                )
+                .order_by(AnalysisSnapshot.generated_at.desc())
+                .limit(1)
             )
-            .order_by(AnalysisSnapshot.generated_at.desc())
-            .limit(1)
-        )
+            if htf_snapshot:
+                htf_timeframe = candidate_timeframe
+                break
         htf_trend = htf_snapshot.trend if htf_snapshot else "undefined"
         structure_support = bool(structure_event)
         candidates = list(
@@ -640,9 +662,9 @@ async def process_closed_candle(
                         direction=decision.direction,
                         strategy=decision.strategy,
                         status=decision.status,
-                        higher_timeframe="4h",
+                        higher_timeframe=htf_timeframe,
                         setup_timeframe=candle.timeframe,
-                        entry_timeframe="15m",
+                        entry_timeframe=candle.timeframe,
                         liquidity_sweep_id=applicable_sweep.id
                         if applicable_sweep
                         else None,
@@ -779,9 +801,9 @@ async def process_closed_candle(
                         direction=primary_wave.direction,
                         strategy=wave_strategy,
                         status=status,
-                        higher_timeframe="4h",
+                        higher_timeframe=htf_timeframe,
                         setup_timeframe=candle.timeframe,
-                        entry_timeframe="15m",
+                        entry_timeframe=candle.timeframe,
                         liquidity_sweep_id=wave_sweep.id if wave_sweep else None,
                         structure_event_id=setup_structure.id,
                         fvg_zone_id=decision.fvg.id if decision.fvg else None,

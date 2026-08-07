@@ -57,10 +57,12 @@ async def test_backfill_paginates_and_is_idempotent(session_factory, monkeypatch
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(hours=4)
     first = await service.run("BTCUSDT", "1h", start=start, end=end)
-    assert first["processed_batches"] == 3
-    assert first["inserted_candles"] == 5
+    # Backfill ranges are [start, end), so four hourly candles require two
+    # two-row pages.
+    assert first["processed_batches"] == 2
+    assert first["inserted_candles"] == 4
     with session_factory() as db:
-        assert db.scalar(select(func.count(Candle.id))) == 5
+        assert db.scalar(select(func.count(Candle.id))) == 4
     calls = len(client.calls)
     second = await service.run("BTCUSDT", "1h", start=start, end=end)
     assert second["inserted_candles"] == 0

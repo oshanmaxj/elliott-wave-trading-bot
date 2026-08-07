@@ -56,6 +56,23 @@ def test_multi_timeframe_bias_alignment_and_weighting():
     assert not mixed["aligned"] and mixed["label"] == "Neutral / Mixed"
 
 
+def test_lower_timeframes_refine_without_overriding_conflicting_macro_bias():
+    aligned = multi_timeframe_bias(
+        {tf: "bullish" for tf in ("1m", "5m", "15m", "1h", "4h")}
+    )
+    conflicting = multi_timeframe_bias(
+        {
+            "4h": "bearish",
+            "1h": "bullish",
+            "15m": "bullish",
+            "5m": "bullish",
+            "1m": "bullish",
+        }
+    )
+    assert aligned["aligned"] and aligned["label"] == "Strong Bullish Alignment"
+    assert not conflicting["aligned"] and conflicting["label"] == "Neutral / Mixed"
+
+
 def test_phase_two_api_endpoints_validate_and_return_empty_state(session_factory):
     with session_factory.begin() as db:
         ensure_symbol(db, "BTCUSDT")
