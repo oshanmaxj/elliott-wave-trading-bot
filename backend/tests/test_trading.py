@@ -21,15 +21,47 @@ D = Decimal
 @pytest.mark.parametrize(
     "direction,zone,entry,stop,targets",
     [
-        ("bullish", (D("99"), D("101")), D("100"), D("95"), (D("105"), D("110"), D("115"))),
-        ("bearish", (D("99"), D("101")), D("100"), D("105"), (D("95"), D("90"), D("85"))),
+        ("bullish", (D("99"), D("101")), D("100"), D("95"), (D("110"), D("115"), D("120"))),
+        ("bearish", (D("99"), D("101")), D("100"), D("105"), (D("90"), D("85"), D("80"))),
     ],
 )
 def test_valid_directional_geometry_and_rr(direction, zone, entry, stop, targets):
     result = validate_geometry(direction, *zone, entry, stop, targets, stop, D("1.5"))
     assert result.valid
     assert result.risk == D("5")
-    assert result.risk_rewards == (D("1"), D("2"), D("3"))
+    assert result.risk_rewards == (D("2"), D("3"), D("4"))
+
+
+@pytest.mark.parametrize(
+    "direction,stop,target",
+    [("bullish", D("95"), D("110")), ("bearish", D("105"), D("90"))],
+)
+def test_single_primary_target_can_satisfy_minimum_rr(direction, stop, target):
+    result = validate_geometry(
+        direction, D("99"), D("101"), D("100"), stop,
+        (target, None, None), stop, D("2"),
+    )
+    assert result.valid
+    assert result.risk_rewards == (D("2"), None, None)
+    assert "invalid_rr" not in result.reasons
+
+
+def test_primary_target_below_minimum_rr_is_rejected():
+    result = validate_geometry(
+        "bullish", D("99"), D("101"), D("100"), D("95"),
+        (D("107"), None, None), D("95"), D("2"),
+    )
+    assert result.risk_rewards == (D("1.4"), None, None)
+    assert "invalid_rr" in result.reasons
+
+
+def test_multiple_targets_validate_against_primary_target():
+    result = validate_geometry(
+        "bullish", D("99"), D("101"), D("100"), D("95"),
+        (D("110"), D("115"), D("120")), D("95"), D("2"),
+    )
+    assert result.valid
+    assert result.risk_rewards == (D("2"), D("3"), D("4"))
 
 
 @pytest.mark.parametrize(

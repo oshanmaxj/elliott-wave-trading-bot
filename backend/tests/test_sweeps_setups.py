@@ -110,6 +110,19 @@ def test_bearish_near_entry_target_is_skipped_and_structural_targets_shift():
     assert (entry - targets[1]) / risk == Decimal("55.30") / risk
 
 
+def test_target_selection_promotes_only_candidate_meeting_minimum_rr():
+    targets, diagnostics, rejected = select_execution_targets(
+        "bullish",
+        Decimal("100"),
+        Decimal("95"),
+        [Decimal("105"), Decimal("107"), Decimal("113")],
+        Decimal("2"),
+    )
+    assert targets == (Decimal("113"), None, None)
+    assert rejected == [Decimal("105"), Decimal("107")]
+    assert "target_too_close_to_entry" in diagnostics
+
+
 @pytest.mark.parametrize(
     "direction,candidates,expected",
     [

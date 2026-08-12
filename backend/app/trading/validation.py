@@ -28,7 +28,7 @@ def validate_geometry(
     targets: Iterable[Decimal | None],
     invalidation_price: Decimal | None = None,
     minimum_rr: Decimal = Decimal("0"),
-    minimum_rr_target: int = 2,
+    minimum_rr_target: int = 1,
 ) -> ValidationResult:
     reasons: list[str] = []
     targets_tuple = tuple(targets)
