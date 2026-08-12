@@ -7,16 +7,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import router
+from app.api.bot import strategy_diagnostics
 from app.core.config import Settings
 from app.core.constants import BINANCE_INTERVALS, TIMEFRAME_MS, TIMEFRAMES
 from app.database.session import get_db
 from app.execution.service import ExecutionRiskEngine, setup_fingerprint
 from app.market_data.binance_rest import BinanceRESTClient
 from app.market_data.binance_ws import BinanceWebSocketManager
-from app.models import BotRuntimeState, ExecutionOrder
+from app.models import BotLog, BotRuntimeState, ExecutionOrder
 from app.repositories.market import ensure_symbol, upsert_candle
 from app.schemas.common import CandleData, RuntimeSettings
 from app.services.historical_backfill import HistoricalBackfillService, historical_backfill
+from app.services.pipeline import process_closed_candle
 
 
 def candle(open_time, timeframe):
@@ -62,6 +64,41 @@ def test_binance_stream_mapping_is_complete_and_deduplicated():
     assert len(manager.streams) == 10
     assert "btcusdt@kline_1m" in manager.streams
     assert "ethusdt@kline_5m" in manager.streams
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeframe", TIMEFRAMES)
+async def test_every_enabled_closed_timeframe_reaches_strategy_evaluation(session_factory, timeframe):
+    opened = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        symbol = ensure_symbol(db, "BTCUSDT")
+        row, _ = upsert_candle(db, symbol.id, timeframe, candle(opened, timeframe))
+        db.add(BotRuntimeState(status="running", enabled_symbols_json=["BTCUSDT"], enabled_timeframes_json=list(TIMEFRAMES)))
+        candle_id = row.id
+    result = await process_closed_candle(candle_id, broadcast=False, session_factory=session_factory)
+    assert result["processed"] is True
+    with session_factory() as db:
+        evaluation = db.query(BotLog).filter_by(event_type="strategy_evaluation").one()
+        assert evaluation.context_json["timeframe"] == timeframe
+
+
+def test_strategy_diagnostics_aggregates_pipeline_events(session_factory):
+    with session_factory.begin() as db:
+        for event_type, context in (
+            ("closed_candle_processed", {}),
+            ("strategy_evaluation", {}),
+            ("candidate_generated", {}),
+            ("candidate_rejected", {"reason": "invalid_stop_side"}),
+            ("setup_persisted", {}),
+        ):
+            db.add(BotLog(level="INFO", service="strategy_pipeline", event_type=event_type, message=event_type, context_json=context))
+    with session_factory() as db:
+        result = strategy_diagnostics("24h", db)
+    assert result["closed_candles_processed"] == 1
+    assert result["strategy_evaluations"] == 1
+    assert result["candidates_generated"] == 1
+    assert result["setups_persisted"] == 1
+    assert result["rejection_reasons"] == {"invalid_stop_side": 1}
 
 
 @pytest.mark.asyncio

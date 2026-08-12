@@ -42,6 +42,16 @@ def test_incorrect_stop_is_rejected(direction, stop, reason):
     assert "negative_risk" in result.reasons
 
 
+@pytest.mark.parametrize(
+    "direction,target",
+    [("bullish", D("99")), ("bearish", D("101"))],
+)
+def test_incorrect_target_side_is_rejected(direction, target):
+    stop = D("95") if direction == "bullish" else D("105")
+    result = validate_geometry(direction, D("99"), D("101"), D("100"), stop, (target, None, None))
+    assert "invalid_target_side" in result.reasons
+
+
 def test_entry_zone_target_order_and_invalidation_rejections():
     result = validate_geometry("bullish", D("101"), D("99"), D("100"), D("95"), (D("105"), D("104"), None), D("101"))
     assert {"invalid_entry_zone", "entry_outside_zone", "invalid_target_side", "invalid_invalidation_side"} <= set(result.reasons)

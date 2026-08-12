@@ -55,7 +55,11 @@ def generate_setup(direction: str, structure_event: Any, candle: Any, settings: 
     atr = Decimal(str(indicators.get("atr14") or 0))
     fallback_buffer = (preferred or Decimal(candle.close)) * Decimal("0.001")
     buffer = max(fallback_buffer, atr * Decimal(str(settings.stop_loss_atr_buffer)))
-    extreme = Decimal(sweep.extreme_price) if sweep else Decimal(candle.low if direction == "bullish" else candle.high)
+    raw_extreme = Decimal(sweep.extreme_price) if sweep else Decimal(candle.low if direction == "bullish" else candle.high)
+    # The protective anchor must be outside the entry zone. A BOS candle can be
+    # entirely beyond an older FVG/order block, so its own low/high alone is not a
+    # valid stop anchor for a retest entry.
+    extreme = raw_extreme if sweep else min(raw_extreme, entry_min) if direction == "bullish" and entry_min is not None else max(raw_extreme, entry_max) if direction == "bearish" and entry_max is not None else raw_extreme
     stop = (extreme - buffer) if direction == "bullish" else (extreme + buffer)
     risk = (
         preferred - stop

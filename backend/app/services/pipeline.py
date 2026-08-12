@@ -11,6 +11,7 @@ from app.elliott.setups import select_wave_strategy
 from app.models import (
     Alert,
     AnalysisSnapshot,
+    BotRuntimeState,
     BotLog,
     Candle,
     FVGZone,
@@ -19,6 +20,7 @@ from app.models import (
     MarketStructureEvent,
     OrderBlock,
     SwingPoint,
+    Symbol,
     TradeSetup,
 )
 from app.smc.engine import (
@@ -34,6 +36,7 @@ from app.services.settings import get_runtime_settings
 from app.structure.engine import classify_trend, detect_structure_break
 from app.structure.swings import detect_confirmed_pivot
 from app.trading.paper import process_paper_candle
+from app.trading.validation import validate_geometry
 
 
 def serialize(row) -> dict:
@@ -91,6 +94,8 @@ def log_setup_decision(db, setup: TradeSetup) -> None:
         },
     )
     db.add(generated)
+    db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="candidate_generated", message="Strategy candidate generated", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy}))
+    db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="setup_persisted", message="Strategy candidate persisted", context_json={"trade_setup_id": setup.id, "status": setup.status}))
     event_type = "setup_rejected" if setup.status == "rejected" else "setup_ready"
     db.add(BotLog(
         level="INFO", service="analysis", event_type=event_type,
@@ -100,6 +105,11 @@ def log_setup_decision(db, setup: TradeSetup) -> None:
             "rejection_reasons": setup.rejection_reasons_json,
         },
     ))
+    if setup.status == "rejected":
+        for reason in setup.rejection_reasons_json:
+            db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="candidate_rejected", message="Strategy candidate rejected", context_json={"trade_setup_id": setup.id, "reason": reason}))
+    elif setup.status == "ready":
+        db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Strategy candidate is execution eligible", context_json={"trade_setup_id": setup.id}))
 
 
 async def process_closed_candle(
@@ -111,6 +121,18 @@ async def process_closed_candle(
         candle = db.get(Candle, candle_id)
         if not candle or not candle.is_closed:
             return {"processed": False, "reason": "candle_not_closed"}
+        runtime = db.scalar(select(BotRuntimeState).limit(1))
+        symbol_name = db.scalar(select(Symbol.symbol).where(Symbol.id == candle.symbol_id))
+        if runtime and runtime.status == "running" and (
+            symbol_name not in runtime.enabled_symbols_json
+            or candle.timeframe not in runtime.enabled_timeframes_json
+        ):
+            reason = "timeframe_not_enabled" if candle.timeframe not in runtime.enabled_timeframes_json else "symbol_not_enabled"
+            db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="candidate_rejected", message="Closed candle excluded from strategy evaluation", context_json={"reason": reason, "symbol": symbol_name, "timeframe": candle.timeframe, "candle_id": candle.id}))
+            db.commit()
+            return {"processed": False, "reason": reason}
+        db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="closed_candle_processed", message="Closed candle entered analysis pipeline", context_json={"symbol": symbol_name, "timeframe": candle.timeframe, "candle_id": candle.id}))
+        db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="strategy_evaluation", message="Enabled closed timeframe reached strategy evaluation", context_json={"symbol": symbol_name, "timeframe": candle.timeframe, "candle_id": candle.id}))
         settings = get_runtime_settings(db)
         profile = TIMEFRAME_ANALYSIS_PROFILES[candle.timeframe]
         settings = settings.model_copy(
@@ -781,18 +803,19 @@ async def process_closed_candle(
                                 primary_wave.projected_target_min,
                             )
                         )
-                    risk = (
-                        abs(preferred - stop)
-                        if preferred is not None and stop is not None
-                        else Decimal("0")
+                    final_geometry = validate_geometry(
+                        primary_wave.direction,
+                        decision.entry_min,
+                        decision.entry_max,
+                        preferred,
+                        stop,
+                        targets,
+                        stop,
+                        Decimal(str(settings.minimum_reward_to_risk)),
                     )
-                    rrs = [
-                        None
-                        if risk <= 0 or target is None
-                        else abs(target - preferred) / risk
-                        for target in targets
-                    ]
-                    status = decision.status
+                    rrs = list(final_geometry.risk_rewards)
+                    final_reasons = list(dict.fromkeys(decision.rejection_reasons + final_geometry.reasons))
+                    status = "rejected" if final_reasons else decision.status
                     wave_risk_factor = (
                         settings.elliott_wave_5_risk_factor if wave_label == "4" else 1
                     )
@@ -835,7 +858,7 @@ async def process_closed_candle(
                             "wave_count_id": primary_wave.id,
                             "risk_factor": wave_risk_factor,
                         },
-                        rejection_reasons_json=decision.rejection_reasons,
+                        rejection_reasons_json=final_reasons,
                         expires_at=decision.expires_at,
                         detected_at=candle.close_time,
                     )

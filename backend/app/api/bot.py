@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import time
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -15,8 +15,10 @@ from app.services.binance_user_stream import user_stream
 from app.market_data.binance_ws import market_stream
 from app.models import (
     BotRuntimeState,
+    BotLog,
     ExchangeAccount,
     ExecutionEvent,
+    ExecutionOrder,
     LivePosition,
 )
 
@@ -217,6 +219,45 @@ def activity(db: Session = Depends(get_db)):
             select(ExecutionEvent).order_by(ExecutionEvent.created_at.desc()).limit(50)
         )
     ]
+
+
+@router.get("/strategy-diagnostics")
+def strategy_diagnostics(
+    period: str = Query("24h", pattern="^(1h|24h|48h)$"),
+    db: Session = Depends(get_db),
+):
+    """Authenticated, database-backed health summary of the live strategy path."""
+    since = datetime.now(timezone.utc) - timedelta(hours=int(period[:-1]))
+    logs = list(db.scalars(select(BotLog).where(BotLog.created_at >= since, BotLog.service == "strategy_pipeline")))
+    counts = {}
+    for event_type in ("closed_candle_processed", "strategy_evaluation", "candidate_generated", "candidate_rejected", "setup_persisted", "execution_eligible"):
+        counts[event_type] = sum(row.event_type == event_type for row in logs)
+    aliases = {
+        "confidence below threshold": "confidence_below_threshold",
+        "reward-to-risk below threshold": "rr_below_threshold",
+        "invalid_rr": "rr_below_threshold",
+        "higher-timeframe counter-trend setup disabled": "htf_countertrend",
+    }
+    rejection_reasons = {}
+    for row in logs:
+        if row.event_type != "candidate_rejected":
+            continue
+        raw = str((row.context_json or {}).get("reason", "unspecified"))
+        reason = aliases.get(raw, raw.replace(" ", "_"))
+        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+    orders = list(db.scalars(select(ExecutionOrder).where(ExecutionOrder.submitted_at >= since)))
+    return {
+        "period": period,
+        "closed_candles_processed": counts["closed_candle_processed"],
+        "strategy_evaluations": counts["strategy_evaluation"],
+        "candidates_generated": counts["candidate_generated"],
+        "candidates_rejected": counts["candidate_rejected"],
+        "setups_persisted": counts["setup_persisted"],
+        "execution_eligible": counts["execution_eligible"],
+        "orders_submitted": len(orders),
+        "orders_filled": sum(row.status in {"FILLED", "filled"} for row in orders),
+        "rejection_reasons": rejection_reasons,
+    }
 
 
 @router.get("/bot/strategies")

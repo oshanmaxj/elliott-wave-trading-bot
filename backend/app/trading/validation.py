@@ -105,6 +105,6 @@ def validate_setup(setup: Any, minimum_rr: Decimal = Decimal("1.5")) -> Validati
         setup.preferred_entry,
         setup.stop_loss,
         (setup.take_profit_1, setup.take_profit_2, setup.take_profit_3),
-        setup.invalidation_price,
+        getattr(setup, "invalidation_price", setup.stop_loss),
         minimum_rr,
     )

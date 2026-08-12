@@ -6,7 +6,7 @@ from decimal import Decimal
 import websockets
 
 from app.core.config import get_settings
-from app.core.constants import BINANCE_INTERVALS
+from app.core.constants import BINANCE_INTERVALS, TIMEFRAMES
 from app.core.logging import log_event
 from app.database.session import SessionLocal
 from app.repositories.market import ensure_symbol, upsert_candle
@@ -28,10 +28,14 @@ class BinanceWebSocketManager:
 
     @property
     def streams(self) -> list[str]:
+        # Subscribe to every centrally supported interval. Runtime bot settings are
+        # database-backed and can change after this long-lived socket connects;
+        # filtering at candle dispatch keeps those settings authoritative without
+        # silently missing newly enabled intervals until a process restart.
         streams = (
             f"{symbol.lower()}@kline_{BINANCE_INTERVALS[timeframe]}"
             for symbol in self.settings.default_symbols
-            for timeframe in self.settings.default_timeframes
+            for timeframe in TIMEFRAMES
         )
         return list(dict.fromkeys(streams))
 
@@ -66,7 +70,12 @@ class BinanceWebSocketManager:
         await broadcaster.broadcast("candle_closed" if data.is_closed else "candle_update", payload)
         if data.is_closed:
             log_event("INFO", "binance_ws", "live_candle_closed", "Live candle closed and persisted", {"symbol": symbol, "timeframe": timeframe, "candle_id": candle_id})
-            await process_closed_candle(candle_id)
+            try:
+                await process_closed_candle(candle_id)
+            except Exception as exc:
+                # A strategy failure must not tear down an otherwise healthy market
+                # socket and masquerade as a connectivity incident.
+                log_event("ERROR", "analysis", "closed_candle_failed", str(exc) or type(exc).__name__, {"symbol": symbol, "timeframe": timeframe, "candle_id": candle_id, "exception_type": type(exc).__name__})
 
     async def run(self) -> None:
         if self.running:

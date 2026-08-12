@@ -10,6 +10,7 @@ from app.execution.filters import (
     validate_symbol_tradeability,
 )
 from app.models import BotRuntimeState, ExecutionOrder, LivePosition
+from app.trading.validation import validate_setup
 
 
 def setup_fingerprint(symbol: str, setup, window_minutes: int = 15) -> str:
@@ -101,6 +102,9 @@ class ExecutionRiskEngine:
             .limit(1)
         ):
             reasons.append("setup_already_executed")
+        geometry = validate_setup(setup, self.s.min_execution_reward_to_risk if hasattr(self.s, "min_execution_reward_to_risk") else Decimal("0"))
+        if not geometry.valid:
+            reasons.extend(reason for reason in geometry.reasons if reason not in reasons)
         fingerprint = setup_fingerprint(symbol.symbol, setup)
         if db.scalar(
             select(ExecutionOrder.id)
