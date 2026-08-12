@@ -27,6 +27,41 @@ class SetupDecision:
     expires_at: Any
 
 
+def select_execution_targets(
+    direction: str,
+    entry: Decimal | None,
+    stop: Decimal | None,
+    candidates: list[Decimal],
+    minimum_rr: Decimal,
+) -> tuple[tuple[Decimal | None, Decimal | None, Decimal | None], list[str], list[Decimal]]:
+    """Select ordered, profitable targets without masking directional mistakes."""
+    if entry is None or stop is None:
+        return (None, None, None), [], []
+    risk = entry - stop if direction == "bullish" else stop - entry
+    if risk <= 0:
+        return (None, None, None), [], []
+    reasons: list[str] = []
+    rejected: list[Decimal] = []
+    valid: list[Decimal] = []
+    for target in dict.fromkeys(Decimal(value) for value in candidates):
+        reward = target - entry if direction == "bullish" else entry - target
+        if reward <= 0:
+            reasons.append("invalid_target_order")
+            rejected.append(target)
+            continue
+        rr = reward / risk
+        if rr < minimum_rr:
+            reasons.append("target_too_close_to_entry")
+            rejected.append(target)
+            continue
+        valid.append(target)
+    valid.sort(reverse=direction == "bearish")
+    if not valid:
+        reasons.append("no_target_meets_minimum_rr")
+    selected = tuple((valid + [None, None, None])[:3])
+    return selected, list(dict.fromkeys(reasons)), rejected
+
+
 def _zone(direction: str, fvgs: list[Any], blocks: list[Any]) -> tuple[Any | None, Any | None, Decimal | None, Decimal | None]:
     fvg = next((z for z in reversed(fvgs) if z.direction == direction and z.status in {"active", "partially_mitigated"}), None)
     block = next((z for z in reversed(blocks) if z.direction == direction and z.status in {"active", "partially_mitigated"}), None)
@@ -72,11 +107,17 @@ def generate_setup(direction: str, structure_event: Any, candle: Any, settings: 
     fallback = tuple((preferred + sign * risk * multiple) if preferred is not None else None for multiple in (1, 2, 3))
     target_swings = [Decimal(s.price) for s in swings if s.swing_type == ("high" if direction == "bullish" else "low") and preferred is not None and ((direction == "bullish" and s.price > preferred) or (direction == "bearish" and s.price < preferred))]
     target_pools = [Decimal(p.price) for p in pools if p.type == ("BSL" if direction == "bullish" else "SSL") and getattr(p, "status", "active") == "active" and preferred is not None and ((direction == "bullish" and p.price > preferred) or (direction == "bearish" and p.price < preferred))]
-    candidates = sorted(
-        set(target_pools + target_swings + [x for x in fallback if x is not None]),
-        reverse=direction == "bearish",
+    structural_candidates = list(dict.fromkeys(target_pools + target_swings))
+    candidates = structural_candidates + [x for x in fallback if x is not None]
+    targets, target_diagnostics, rejected_targets = select_execution_targets(
+        direction,
+        preferred,
+        stop,
+        candidates,
+        Decimal(str(settings.minimum_reward_to_risk)),
     )
-    targets = tuple((candidates + [None, None, None])[:3])
+    if "no_target_meets_minimum_rr" in target_diagnostics:
+        reasons.extend(target_diagnostics)
     validation = validate_geometry(
         direction, entry_min, entry_max, preferred, stop, targets, stop,
         Decimal(str(settings.minimum_reward_to_risk)),
@@ -101,7 +142,7 @@ def generate_setup(direction: str, structure_event: Any, candle: Any, settings: 
     status = "rejected" if reasons else "ready" if score >= 70 else "watching"
     expires = candle.close_time + timedelta(milliseconds=TIMEFRAME_MS[candle.timeframe] * settings.setup_expiry_candles)
     stop_source = "sweep" if sweep else "order_block" if block else "structure"
-    return SetupDecision(direction, strategy, status, fvg, block, entry_min, entry_max, preferred, stop if preferred is not None else None, targets, rrs, score, breakdown, {"counter_trend": counter_trend, "structure_event": structure_event.event_type, "zone_overlap": bool(fvg and block), "stop_source": stop_source}, list(dict.fromkeys(reasons)), expires)
+    return SetupDecision(direction, strategy, status, fvg, block, entry_min, entry_max, preferred, stop if preferred is not None else None, targets, rrs, score, breakdown, {"counter_trend": counter_trend, "structure_event": structure_event.event_type, "zone_overlap": bool(fvg and block), "stop_source": stop_source, "structural_target_candidates": [str(value) for value in structural_candidates], "rejected_analysis_targets": [str(value) for value in rejected_targets], "target_diagnostics": target_diagnostics}, list(dict.fromkeys(reasons)), expires)
 
 
 def update_setup_lifecycle(setup: Any, candle: Any) -> str | None:

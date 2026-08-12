@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models import LiquidityPool, LiquiditySweep
 from app.repositories.market import ensure_symbol, upsert_candle
 from app.schemas.common import RuntimeSettings
-from app.smc.setups import generate_setup, update_setup_lifecycle
+from app.smc.setups import generate_setup, select_execution_targets, update_setup_lifecycle
 from app.smc.sweeps import detect_sweep, update_sweep
 from conftest import make_candle
 from test_repository_sync import data
@@ -91,6 +91,60 @@ def test_continuation_and_hard_setup_rejections():
     countertrend = generate_setup("bullish", args[2], args[1], args[0], *args[4:9], "bearish", args[10], args[3])
     assert "stop loss on the wrong side" in wrong_stop.rejection_reasons
     assert "higher-timeframe counter-trend setup disabled" in countertrend.rejection_reasons
+
+
+def test_bearish_near_entry_target_is_skipped_and_structural_targets_shift():
+    entry, stop = Decimal("1881.18"), Decimal("1893.66118")
+    targets, diagnostics, rejected = select_execution_targets(
+        "bearish",
+        entry,
+        stop,
+        [Decimal("1881.16"), Decimal("1850.58"), Decimal("1825.88")],
+        Decimal("1.5"),
+    )
+    assert targets == (Decimal("1850.58"), Decimal("1825.88"), None)
+    assert rejected == [Decimal("1881.16")]
+    assert "target_too_close_to_entry" in diagnostics
+    risk = stop - entry
+    assert (entry - targets[0]) / risk == Decimal("30.60") / risk
+    assert (entry - targets[1]) / risk == Decimal("55.30") / risk
+
+
+@pytest.mark.parametrize(
+    "direction,candidates,expected",
+    [
+        ("bullish", [Decimal("130"), Decimal("115"), Decimal("120")], (Decimal("115"), Decimal("120"), Decimal("130"))),
+        ("bearish", [Decimal("70"), Decimal("85"), Decimal("80")], (Decimal("85"), Decimal("80"), Decimal("70"))),
+    ],
+)
+def test_execution_targets_are_directionally_monotonic(direction, candidates, expected):
+    stop = Decimal("90") if direction == "bullish" else Decimal("110")
+    targets, diagnostics, _ = select_execution_targets(direction, Decimal("100"), stop, candidates, Decimal("1"))
+    assert targets == expected and "invalid_target_order" not in diagnostics
+
+
+def test_all_targets_below_minimum_rr_are_rejected_without_fabrication():
+    targets, diagnostics, rejected = select_execution_targets(
+        "bearish",
+        Decimal("1895.34"),
+        Decimal("1937.389"),
+        [Decimal("1888.62"), Decimal("1886.28"), Decimal("1883.38")],
+        Decimal("1.5"),
+    )
+    assert targets == (None, None, None)
+    assert len(rejected) == 3
+    assert {"target_too_close_to_entry", "no_target_meets_minimum_rr"} <= set(diagnostics)
+
+
+def test_final_rr_values_match_final_selected_targets_without_abs_masking():
+    targets, _, _ = select_execution_targets("bearish", Decimal("100"), Decimal("110"), [Decimal("80"), Decimal("70"), Decimal("120")], Decimal("1.5"))
+    from app.trading.validation import validate_geometry
+    geometry = validate_geometry("bearish", Decimal("99"), Decimal("101"), Decimal("100"), Decimal("110"), targets, Decimal("110"), Decimal("1.5"))
+    assert targets == (Decimal("80"), Decimal("70"), None)
+    assert geometry.risk_rewards == (Decimal("2"), Decimal("3"), None)
+    assert "invalid_target_order" not in geometry.reasons
+    wrong = validate_geometry("bearish", Decimal("99"), Decimal("101"), Decimal("100"), Decimal("110"), (Decimal("120"), None, None))
+    assert "invalid_target_side" in wrong.reasons
 
 
 def test_setup_trigger_invalidation_and_expiry_lifecycle():

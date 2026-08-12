@@ -29,7 +29,7 @@ from app.smc.engine import (
     order_block_mitigation,
     premium_discount,
 )
-from app.smc.setups import generate_setup, update_setup_lifecycle
+from app.smc.setups import generate_setup, select_execution_targets, update_setup_lifecycle
 from app.smc.sweeps import detect_sweep, update_sweep
 from app.services.broadcast import broadcaster
 from app.services.settings import get_runtime_settings
@@ -794,23 +794,35 @@ async def process_closed_candle(
                         wave_sweep is None,
                     )
                     preferred, stop = decision.preferred_entry, decision.stop_loss
-                    targets = list(decision.targets)
+                    structural_targets = [
+                        Decimal(value)
+                        for value in decision.conditions.get(
+                            "structural_target_candidates", []
+                        )
+                    ]
+                    wave_targets = []
                     if (
                         preferred is not None
                         and stop is not None
                         and primary_wave.projected_target_min is not None
                     ):
-                        targets[1], targets[2] = (
-                            (
+                        wave_targets = [
+                            value
+                            for value in (
                                 primary_wave.projected_target_min,
                                 primary_wave.projected_target_max,
                             )
-                            if primary_wave.direction == "bullish"
-                            else (
-                                primary_wave.projected_target_max,
-                                primary_wave.projected_target_min,
-                            )
+                            if value is not None
+                        ]
+                    targets, wave_target_diagnostics, rejected_wave_targets = (
+                        select_execution_targets(
+                            primary_wave.direction,
+                            preferred,
+                            stop,
+                            structural_targets + wave_targets,
+                            Decimal(str(settings.minimum_reward_to_risk)),
                         )
+                    )
                     final_geometry = validate_geometry(
                         primary_wave.direction,
                         decision.entry_min,
@@ -822,7 +834,12 @@ async def process_closed_candle(
                         Decimal(str(settings.minimum_reward_to_risk)),
                     )
                     rrs = list(final_geometry.risk_rewards)
-                    final_reasons = list(dict.fromkeys(decision.rejection_reasons + final_geometry.reasons))
+                    target_reasons = (
+                        wave_target_diagnostics
+                        if "no_target_meets_minimum_rr" in wave_target_diagnostics
+                        else []
+                    )
+                    final_reasons = list(dict.fromkeys(decision.rejection_reasons + target_reasons + final_geometry.reasons))
                     status = "rejected" if final_reasons else decision.status
                     wave_risk_factor = (
                         settings.elliott_wave_5_risk_factor if wave_label == "4" else 1
@@ -865,6 +882,10 @@ async def process_closed_candle(
                             "wave": wave_label,
                             "wave_count_id": primary_wave.id,
                             "risk_factor": wave_risk_factor,
+                            "rejected_analysis_targets": [
+                                str(value) for value in rejected_wave_targets
+                            ],
+                            "target_diagnostics": wave_target_diagnostics,
                         },
                         rejection_reasons_json=final_reasons,
                         expires_at=decision.expires_at,
