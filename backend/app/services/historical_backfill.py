@@ -11,7 +11,7 @@ from app.core.constants import TIMEFRAME_MS
 from app.core.logging import log_event
 from app.database.session import SessionLocal
 from app.market_data.binance_rest import BinanceRESTClient
-from app.models import Candle, Symbol
+from app.models import AnalysisSnapshot, Candle, Symbol
 from app.repositories.market import ensure_symbol, upsert_candle
 
 
@@ -250,11 +250,26 @@ class HistoricalBackfillService:
 
     async def run_configured(self):
         config = get_settings()
+        # Candle synchronization and derived analysis must advance together. The
+        # incremental analysis service skips snapshots already processed at the
+        # current SMC version and never deletes historical analysis records.
+        from app.services.analysis_backfill import AnalysisBackfillService
+
+        analysis = AnalysisBackfillService(session_factory=self.session_factory)
         for symbol in config.default_symbols:
             for timeframe in config.default_timeframes:
                 try:
                     await self.run(symbol, timeframe)
-                except Exception:
+                    if config.analyze_historical_candles:
+                        with self.session_factory() as db:
+                            latest_analysis = db.scalar(
+                                select(func.max(AnalysisSnapshot.generated_at))
+                                .join(Symbol, AnalysisSnapshot.symbol_id == Symbol.id)
+                                .where(Symbol.symbol == symbol, AnalysisSnapshot.timeframe == timeframe)
+                            )
+                        await analysis.run(symbol, timeframe, start_time=latest_analysis)
+                except Exception as exc:
+                    log_event("ERROR", "historical_backfill", "configured_backfill_failed", str(exc), {"symbol": symbol, "timeframe": timeframe, "exception_type": type(exc).__name__})
                     continue
 
 

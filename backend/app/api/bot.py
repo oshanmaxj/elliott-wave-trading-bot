@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.constants import SUPPORTED_TIMEFRAMES
+from app.core.constants import TIMEFRAMES
 from app.auth import current_user, require_roles
 from app.database.session import get_db
 from app.execution.binance import BinanceSpotClient
@@ -19,7 +20,14 @@ from app.models import (
     ExchangeAccount,
     ExecutionEvent,
     ExecutionOrder,
+    FVGZone,
     LivePosition,
+    LiquiditySweep,
+    MarketStructureEvent,
+    OrderBlock,
+    SwingPoint,
+    Symbol,
+    TradeSetup,
 )
 
 router = APIRouter(
@@ -246,6 +254,29 @@ def strategy_diagnostics(
         reason = aliases.get(raw, raw.replace(" ", "_"))
         rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
     orders = list(db.scalars(select(ExecutionOrder).where(ExecutionOrder.submitted_at >= since)))
+    analysis_models = {
+        "swing_points_created": (SwingPoint, SwingPoint.detected_at),
+        "structure_events_created": (MarketStructureEvent, MarketStructureEvent.detected_at),
+        "fvg_zones_created": (FVGZone, FVGZone.detected_at),
+        "order_blocks_created": (OrderBlock, OrderBlock.detected_at),
+        "liquidity_sweeps_created": (LiquiditySweep, LiquiditySweep.detected_at),
+        "trade_setups_created": (TradeSetup, TradeSetup.detected_at),
+    }
+    analysis_activity = {
+        name: db.scalar(select(func.count(model.id)).where(timestamp >= since)) or 0
+        for name, (model, timestamp) in analysis_models.items()
+    }
+    latest_by_market = []
+    for symbol in db.scalars(select(Symbol.symbol).where(Symbol.is_active.is_(True)).order_by(Symbol.symbol)):
+        for timeframe in TIMEFRAMES:
+            latest_by_market.append({
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "latest_swing_point_at": db.scalar(select(func.max(SwingPoint.detected_at)).join(Symbol, SwingPoint.symbol_id == Symbol.id).where(Symbol.symbol == symbol, SwingPoint.timeframe == timeframe)),
+            "latest_structure_event_at": db.scalar(select(func.max(MarketStructureEvent.detected_at)).join(Symbol, MarketStructureEvent.symbol_id == Symbol.id).where(Symbol.symbol == symbol, MarketStructureEvent.timeframe == timeframe)),
+            "latest_fvg_at": db.scalar(select(func.max(FVGZone.detected_at)).join(Symbol, FVGZone.symbol_id == Symbol.id).where(Symbol.symbol == symbol, FVGZone.timeframe == timeframe)),
+            "latest_order_block_at": db.scalar(select(func.max(OrderBlock.detected_at)).join(Symbol, OrderBlock.symbol_id == Symbol.id).where(Symbol.symbol == symbol, OrderBlock.timeframe == timeframe)),
+            })
     return {
         "period": period,
         "closed_candles_processed": counts["closed_candle_processed"],
@@ -257,6 +288,8 @@ def strategy_diagnostics(
         "orders_submitted": len(orders),
         "orders_filled": sum(row.status in {"FILLED", "filled"} for row in orders),
         "rejection_reasons": rejection_reasons,
+        "analysis_activity": analysis_activity,
+        "latest_analysis_by_market": latest_by_market,
     }
 
 

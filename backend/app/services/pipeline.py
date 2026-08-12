@@ -132,7 +132,7 @@ async def process_closed_candle(
             db.commit()
             return {"processed": False, "reason": reason}
         db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="closed_candle_processed", message="Closed candle entered analysis pipeline", context_json={"symbol": symbol_name, "timeframe": candle.timeframe, "candle_id": candle.id}))
-        db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="strategy_evaluation", message="Enabled closed timeframe reached strategy evaluation", context_json={"symbol": symbol_name, "timeframe": candle.timeframe, "candle_id": candle.id}))
+        stage_counts = {"swing_points_created": 0, "structure_events_created": 0, "fvg_zones_created": 0, "order_blocks_created": 0, "liquidity_sweeps_created": 0, "trade_setups_created": 0}
         settings = get_runtime_settings(db)
         profile = TIMEFRAME_ANALYSIS_PROFILES[candle.timeframe]
         settings = settings.model_copy(
@@ -190,6 +190,7 @@ async def process_closed_candle(
                 db.add(swing)
                 db.flush()
                 events.append(("swing_point", serialize(swing)))
+                stage_counts["swing_points_created"] += 1
         swings = list(
             db.scalars(
                 select(SwingPoint)
@@ -237,6 +238,7 @@ async def process_closed_candle(
                 db.add(structure_event)
                 db.flush()
                 events.append((signal.event_type.lower(), serialize(structure_event)))
+                stage_counts["structure_events_created"] += 1
             add_alert(
                 db,
                 events,
@@ -287,6 +289,7 @@ async def process_closed_candle(
                 db.add(zone)
                 db.flush()
                 events.append(("fvg_new", serialize(zone)))
+                stage_counts["fvg_zones_created"] += 1
             add_alert(
                 db,
                 events,
@@ -513,6 +516,7 @@ async def process_closed_candle(
                 else "liquidity_sweep_candidate"
             )
             events.append((event_name, serialize(sweep)))
+            stage_counts["liquidity_sweeps_created"] += 1
             if decision.status == "confirmed":
                 pool.status, pool.swept_at = "swept", candle.close_time
                 add_alert(
@@ -549,6 +553,7 @@ async def process_closed_candle(
                 db.add(block)
                 db.flush()
                 events.append(("order_block_new", serialize(block)))
+                stage_counts["order_blocks_created"] += 1
         active_blocks = list(
             db.scalars(
                 select(OrderBlock).where(
@@ -716,6 +721,7 @@ async def process_closed_candle(
                     db.add(setup)
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
+                    stage_counts["trade_setups_created"] += 1
                     log_setup_decision(db, setup)
                     if setup.status == "ready":
                         events.append(("trade_setup_ready", serialize(setup)))
@@ -865,6 +871,7 @@ async def process_closed_candle(
                     db.add(setup)
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
+                    stage_counts["trade_setups_created"] += 1
                     log_setup_decision(db, setup)
         live_setups = list(
             db.scalars(
@@ -965,6 +972,23 @@ async def process_closed_candle(
             events.append(("analysis_snapshot", serialize(snapshot)))
         elif snapshot.indicator_values_json.get("_smc_version") != 4:
             snapshot.indicator_values_json = indicators
+        diagnostic_reasons = []
+        required_candles = settings.swing_left_bars + settings.swing_right_bars + 1
+        if len(candles) < required_candles:
+            diagnostic_reasons.append("insufficient_candles")
+        if not swings:
+            diagnostic_reasons.append("no_confirmed_swing")
+        if signal is None:
+            diagnostic_reasons.append("no_structure_break")
+        elif structure_event is None:
+            diagnostic_reasons.append("structure_confidence_below_threshold")
+        if fvg_signal is None:
+            diagnostic_reasons.append("no_fvg")
+        if block_signal is None:
+            diagnostic_reasons.append("no_order_block")
+        if not active_fvgs and not all_blocks:
+            diagnostic_reasons.append("no_setup_zone")
+        db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="strategy_evaluation", message="Enabled closed timeframe completed strategy evaluation", context_json={"symbol": symbol_name, "timeframe": candle.timeframe, "candle_id": candle.id, "closed_candle_count": len(candles), "confirmed_swing_count": len(swings), "effective_settings": {"swing_left_bars": settings.swing_left_bars, "swing_right_bars": settings.swing_right_bars, "structure_confidence_threshold": settings.structure_confidence_threshold, "wick_break_allowed": settings.wick_break_allowed, "minimum_fvg_atr_size": settings.minimum_fvg_atr_size}, "stage_counts": stage_counts, "no_candidate_reasons": diagnostic_reasons}))
         db.commit()
         response = {"processed": True, "candle_id": candle_id, "events": len(events)}
     if broadcast:

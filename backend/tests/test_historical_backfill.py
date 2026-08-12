@@ -45,7 +45,8 @@ class BatchClient:
         step = timedelta(milliseconds={"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}[timeframe])
         rows, cursor = [], start
         while cursor <= end and len(rows) < min(limit, self.batch_size):
-            rows.append(data(cursor, timeframe)); cursor += step
+            rows.append(data(cursor, timeframe))
+            cursor += step
         return rows
 
 
@@ -67,6 +68,29 @@ async def test_backfill_paginates_and_is_idempotent(session_factory, monkeypatch
     second = await service.run("BTCUSDT", "1h", start=start, end=end)
     assert second["inserted_candles"] == 0
     assert len(client.calls) == calls
+
+
+@pytest.mark.asyncio
+async def test_configured_candle_backfill_triggers_incremental_analysis(session_factory, monkeypatch):
+    service = HistoricalBackfillService(client=FakeClient(), session_factory=session_factory)
+    candle_runs, analysis_runs = [], []
+
+    async def candle_run(symbol, timeframe):
+        candle_runs.append((symbol, timeframe))
+
+    class Analysis:
+        def __init__(self, session_factory):
+            pass
+
+        async def run(self, symbol, timeframe, start_time=None):
+            analysis_runs.append((symbol, timeframe, start_time))
+
+    monkeypatch.setattr(service, "run", candle_run)
+    monkeypatch.setattr("app.services.analysis_backfill.AnalysisBackfillService", Analysis)
+    monkeypatch.setattr("app.services.historical_backfill.get_settings", lambda: type("S", (), {"default_symbols": ["BTCUSDT"], "default_timeframes": ["1m", "5m", "15m", "1h", "4h"], "analyze_historical_candles": True})())
+    await service.run_configured()
+    assert len(candle_runs) == len(analysis_runs) == 5
+    assert [row[1] for row in analysis_runs] == ["1m", "5m", "15m", "1h", "4h"]
 
 
 @pytest.mark.asyncio

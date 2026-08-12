@@ -99,6 +99,21 @@ def test_strategy_diagnostics_aggregates_pipeline_events(session_factory):
     assert result["candidates_generated"] == 1
     assert result["setups_persisted"] == 1
     assert result["rejection_reasons"] == {"invalid_stop_side": 1}
+    assert result["analysis_activity"]["swing_points_created"] == 0
+
+
+@pytest.mark.asyncio
+async def test_insufficient_history_is_observable(session_factory):
+    opened = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        symbol = ensure_symbol(db, "BTCUSDT")
+        row, _ = upsert_candle(db, symbol.id, "1m", candle(opened, "1m"))
+        candle_id = row.id
+    await process_closed_candle(candle_id, broadcast=False, session_factory=session_factory)
+    with session_factory() as db:
+        evaluation = db.query(BotLog).filter_by(event_type="strategy_evaluation").one()
+        assert "insufficient_candles" in evaluation.context_json["no_candidate_reasons"]
+        assert "no_confirmed_swing" in evaluation.context_json["no_candidate_reasons"]
 
 
 @pytest.mark.asyncio
