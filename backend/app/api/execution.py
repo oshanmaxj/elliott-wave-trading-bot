@@ -322,7 +322,7 @@ def queue(db: Session = Depends(get_db)):
             select(TradeSetup)
             .where(
                 TradeSetup.status.in_(
-                    ["ready", "eligible", "pending_approval"]
+                    ["ready", "eligible", "pending_approval", "triggered"]
                 )
             )
             .order_by(TradeSetup.detected_at.desc())

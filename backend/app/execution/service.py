@@ -84,7 +84,7 @@ class ExecutionRiskEngine:
         )
         if setup.setup_timeframe not in enabled_timeframes:
             reasons.append("timeframe_not_enabled")
-        if setup.status not in {"ready", "eligible", "approved", "pending_approval"}:
+        if setup.status not in {"ready", "eligible", "approved", "pending_approval", "triggered"}:
             reasons.append("setup_not_eligible")
         if setup.confidence_score < self.s.min_execution_confidence:
             reasons.append("confidence_below_minimum")

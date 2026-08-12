@@ -96,7 +96,7 @@ def log_setup_decision(db, setup: TradeSetup) -> None:
     db.add(generated)
     db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="candidate_generated", message="Strategy candidate generated", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy}))
     db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="setup_persisted", message="Strategy candidate persisted", context_json={"trade_setup_id": setup.id, "status": setup.status}))
-    event_type = "setup_rejected" if setup.status == "rejected" else "setup_ready"
+    event_type = f"setup_{setup.status}"
     db.add(BotLog(
         level="INFO", service="analysis", event_type=event_type,
         message=f"Setup {setup.id} {setup.status}",
@@ -909,6 +909,10 @@ async def process_closed_candle(
             setup.status = next_status
             if next_status == "triggered":
                 setup.triggered_at = candle.close_time
+                db.add(BotLog(level="INFO", service="analysis", event_type="setup_triggered", message=f"Setup {setup.id} triggered", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy}))
+                db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Triggered setup is eligible for execution routing", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy, "source": "lifecycle_trigger"}))
+                if runtime and runtime.automatic_trading_enabled and not runtime.manual_approval_required:
+                    automatic_setup_ids.append(setup.id)
             if next_status == "invalidated":
                 setup.invalidated_at = candle.close_time
             events.append((f"trade_setup_{next_status}", serialize(setup)))

@@ -8,7 +8,10 @@ from app.core.config import Settings
 from app.execution.binance import BinanceError
 from app.execution.orchestrator import AutomaticTestnetExecutor
 from app.api.execution import queue
-from app.models import BotRuntimeState, ExecutionEvent, ExecutionOrder, Symbol, TradeSetup
+from app.models import BotLog, BotRuntimeState, ExecutionEvent, ExecutionOrder, Symbol, TradeSetup
+from app.repositories.market import upsert_candle
+from app.schemas.common import CandleData
+from app.services.pipeline import process_closed_candle
 
 
 def execution_settings(**updates):
@@ -32,14 +35,14 @@ def execution_settings(**updates):
     return Settings(**values)
 
 
-def seed(session_factory, *, direction="bullish", status="running", paused=False, automatic=True, enabled=True, kill=False, invalid_geometry=False):
+def seed(session_factory, *, direction="bullish", status="running", setup_status="ready", paused=False, automatic=True, enabled=True, kill=False, invalid_geometry=False):
     now = datetime.now(timezone.utc)
     with session_factory.begin() as db:
         symbol = Symbol(exchange="binance", symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT", market_type="spot")
         db.add(symbol)
         db.flush()
         stop = Decimal("105") if invalid_geometry else Decimal("95")
-        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy="bullish_continuation", status="ready", higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("105"), take_profit_2=Decimal("110"), take_profit_3=Decimal("115"), risk_reward_1=1, risk_reward_2=2, risk_reward_3=3, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
+        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy="bullish_continuation", status=setup_status, higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("105"), take_profit_2=Decimal("110"), take_profit_3=Decimal("115"), risk_reward_1=1, risk_reward_2=2, risk_reward_3=3, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
         db.add(setup)
         db.add(BotRuntimeState(status=status, environment="testnet", automatic_trading_enabled=automatic, manual_approval_required=False, pause_new_entries=paused, kill_switch_enabled=kill, enabled_symbols_json=["BTCUSDT"] if enabled else [], enabled_timeframes_json=["1m"] if enabled else [], enabled_strategies_json=["bullish_continuation"] if enabled else []))
         db.flush()
@@ -99,6 +102,13 @@ async def test_eligible_automatic_testnet_setup_submits_exactly_once(session_fac
         order = db.scalar(select(ExecutionOrder))
         assert order.exchange_order_id == "77" and order.status == "NEW"
         assert db.scalar(select(func.count(ExecutionOrder.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_triggered_setup_passes_final_risk_engine_and_submits(session_factory, monkeypatch):
+    setup_id = seed(session_factory, setup_status="triggered")
+    result = await executor(session_factory, monkeypatch).handoff(setup_id)
+    assert result["started"] and Client.submissions == 1
 
 
 @pytest.mark.asyncio
@@ -173,3 +183,80 @@ def test_manual_mode_returns_pending_setup_with_symbol(session_factory):
     with session_factory() as db:
         rows = queue(db)
         assert len(rows) == 1 and rows[0]["id"] == setup_id and rows[0]["symbol"] == "BTCUSDT"
+
+
+def lifecycle_seed(session_factory, *, manual=False, direction="bullish"):
+    start = datetime(2026, 8, 13, tzinfo=timezone.utc)
+    with session_factory.begin() as db:
+        symbol = Symbol(exchange="binance", symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT", market_type="spot")
+        db.add(symbol)
+        db.flush()
+        candle_ids = []
+        for index, low in enumerate((Decimal("102"), Decimal("99"), Decimal("99"))):
+            opened = start + timedelta(minutes=index)
+            candle, _ = upsert_candle(db, symbol.id, "1m", CandleData(open_time=opened, close_time=opened + timedelta(minutes=1) - timedelta(milliseconds=1), open=Decimal("102"), high=Decimal("103"), low=low, close=Decimal("101"), volume=Decimal("10"), quote_volume=Decimal("1000"), trade_count=5, taker_buy_base_volume=Decimal("5"), taker_buy_quote_volume=Decimal("500"), is_closed=True))
+            candle_ids.append(candle.id)
+        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy="bullish_continuation", status="watching", higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=Decimal("95") if direction == "bullish" else Decimal("105"), invalidation_price=Decimal("95") if direction == "bullish" else Decimal("105"), take_profit_1=Decimal("105") if direction == "bullish" else Decimal("95"), take_profit_2=Decimal("110") if direction == "bullish" else Decimal("90"), take_profit_3=Decimal("115") if direction == "bullish" else Decimal("85"), confidence_score=90, expires_at=start + timedelta(hours=1), detected_at=start)
+        db.add(setup)
+        db.add(BotRuntimeState(status="running", environment="testnet", automatic_trading_enabled=True, manual_approval_required=manual, pause_new_entries=False, kill_switch_enabled=False, enabled_symbols_json=["BTCUSDT"], enabled_timeframes_json=["1m"], enabled_strategies_json=["bullish_continuation"]))
+        db.flush()
+        return setup.id, candle_ids
+
+
+@pytest.mark.asyncio
+async def test_watching_entry_touch_routes_exactly_one_automatic_handoff(session_factory, monkeypatch):
+    setup_id, candle_ids = lifecycle_seed(session_factory)
+    calls = []
+
+    async def handoff(self, routed_id, **kwargs):
+        calls.append(routed_id)
+        return {"started": True}
+
+    monkeypatch.setattr(AutomaticTestnetExecutor, "handoff", handoff)
+    await process_closed_candle(candle_ids[1], broadcast=False, session_factory=session_factory)
+    await process_closed_candle(candle_ids[2], broadcast=False, session_factory=session_factory)
+    assert calls == [setup_id]
+    with session_factory() as db:
+        setup = db.get(TradeSetup, setup_id)
+        eligible = list(db.scalars(select(ExecutionEvent)))
+        logs = list(db.scalars(select(BotLog).where(BotLog.event_type == "execution_eligible")))
+        assert setup.status == "triggered" and setup.triggered_at is not None
+        assert len(logs) == 1 and not eligible
+
+
+@pytest.mark.asyncio
+async def test_manual_triggered_setup_is_queued_without_auto_handoff(session_factory, monkeypatch):
+    setup_id, candle_ids = lifecycle_seed(session_factory, manual=True)
+    calls = []
+
+    async def handoff(self, routed_id, **kwargs):
+        calls.append(routed_id)
+
+    monkeypatch.setattr(AutomaticTestnetExecutor, "handoff", handoff)
+    await process_closed_candle(candle_ids[1], broadcast=False, session_factory=session_factory)
+    assert calls == []
+    with session_factory() as db:
+        rows = queue(db)
+        assert len(rows) == 1 and rows[0]["id"] == setup_id and rows[0]["status"] == "triggered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["expired", "invalidated"])
+async def test_terminal_lifecycle_transition_never_routes_execution(terminal_status, session_factory, monkeypatch):
+    setup_id, candle_ids = lifecycle_seed(session_factory)
+    with session_factory.begin() as db:
+        setup = db.get(TradeSetup, setup_id)
+        if terminal_status == "expired":
+            setup.expires_at = datetime(2026, 8, 13, tzinfo=timezone.utc)
+        else:
+            setup.invalidation_price = Decimal("100")
+    calls = []
+
+    async def handoff(self, routed_id, **kwargs):
+        calls.append(routed_id)
+
+    monkeypatch.setattr(AutomaticTestnetExecutor, "handoff", handoff)
+    await process_closed_candle(candle_ids[1], broadcast=False, session_factory=session_factory)
+    assert calls == []
+    with session_factory() as db:
+        assert db.get(TradeSetup, setup_id).status == terminal_status
