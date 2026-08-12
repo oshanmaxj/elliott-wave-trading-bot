@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://elliott:elliott@localhost:5432/elliott_wave"
     redis_url: str = "redis://localhost:6379/0"
     binance_rest_base_url: str = "https://fapi.binance.com"
-    binance_ws_base_url: str = "wss://fstream.binance.com/stream"
+    binance_ws_base_url: str = "wss://stream.testnet.binance.vision:9443/stream"
     default_symbols: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
     default_timeframes: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(TIMEFRAMES))
     historical_candle_limit: int = Field(default=500, ge=10, le=1500)
