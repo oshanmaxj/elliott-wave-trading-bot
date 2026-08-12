@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.execution.binance import BinanceSpotClient
 from app.execution.filters import (
     floor_quantity_to_step,
+    quantity_limits,
     round_price_to_tick,
     validate_notional,
 )
@@ -50,3 +51,53 @@ def test_client_order_id_is_deterministic():
         == client_order_id("testnet", 42)
         == "ws-test-42-entry-1"
     )
+
+
+def filters(market=None, lot=None):
+    rows = []
+    if market is not None:
+        rows.append({"filterType": "MARKET_LOT_SIZE", **market})
+    if lot is not None:
+        rows.append({"filterType": "LOT_SIZE", **lot})
+    return {"filters": rows}
+
+
+def test_market_zero_step_falls_back_to_lot_size_step():
+    info = filters(
+        {"minQty": "0", "maxQty": "100", "stepSize": "0"},
+        {"minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+    )
+    assert quantity_limits(info) == (
+        Decimal("0.00001"), Decimal("100"), Decimal("0.00001")
+    )
+
+
+def test_positive_market_step_takes_precedence_over_lot_step():
+    info = filters(
+        {"minQty": "0.001", "maxQty": "100", "stepSize": "0.001"},
+        {"minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+    )
+    assert quantity_limits(info)[2] == Decimal("0.001")
+
+
+def test_missing_market_filter_uses_lot_size():
+    info = filters(
+        lot={"minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"}
+    )
+    assert quantity_limits(info) == (
+        Decimal("0.00001"), Decimal("9000"), Decimal("0.00001")
+    )
+
+
+def test_btcusdt_testnet_market_limits_combine_with_lot_step_and_minimum():
+    info = filters(
+        {"minQty": "0.00000000", "maxQty": "141.67845966", "stepSize": "0.00000000"},
+        {"minQty": "0.00001000", "maxQty": "9000.00000000", "stepSize": "0.00001000"},
+    )
+    minimum, maximum, step = quantity_limits(info)
+    assert (minimum, maximum, step) == (
+        Decimal("0.00001000"),
+        Decimal("141.67845966"),
+        Decimal("0.00001000"),
+    )
+    assert floor_quantity_to_step(min(Decimal("141.67846999"), maximum), step) <= maximum

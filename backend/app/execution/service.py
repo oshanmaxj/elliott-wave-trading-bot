@@ -138,19 +138,24 @@ class ExecutionRiskEngine:
         distance = abs(entry - stop)
         calculated = risk / distance if distance else zero
         minimum, maximum, step = quantity_limits(symbol_info)
-        adjusted = (
-            floor_quantity_to_step(min(calculated, maximum), step)
-            if calculated
-            else zero
-        )
         exposure_cap = equity * self.s.max_symbol_exposure_pct / Decimal("100")
-        adjusted = min(
-            adjusted,
-            floor_quantity_to_step(exposure_cap / entry, step) if entry else zero,
-        )
-        adjusted = min(
-            adjusted, floor_quantity_to_step(equity / entry, step) if entry else zero
-        )
+        if step <= 0:
+            reasons.append("invalid_quantity_step")
+            adjusted = zero
+        else:
+            adjusted = (
+                floor_quantity_to_step(min(calculated, maximum), step)
+                if calculated
+                else zero
+            )
+            adjusted = min(
+                adjusted,
+                floor_quantity_to_step(exposure_cap / entry, step) if entry else zero,
+            )
+            adjusted = min(
+                adjusted,
+                floor_quantity_to_step(equity / entry, step) if entry else zero,
+            )
         notional = adjusted * entry
         if adjusted < minimum:
             reasons.append("quantity_below_minimum")

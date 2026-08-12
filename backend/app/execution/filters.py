@@ -38,10 +38,18 @@ def validate_symbol_tradeability(info: dict, order_type="MARKET") -> list[str]:
 
 
 def quantity_limits(info, market=True):
-    f = _filter(info, "MARKET_LOT_SIZE") if market else None
-    f = f or _filter(info, "LOT_SIZE") or {}
-    return (
-        Decimal(f.get("minQty", "0")),
-        Decimal(f.get("maxQty", "1E99")),
-        Decimal(f.get("stepSize", "1")),
-    )
+    market_filter = _filter(info, "MARKET_LOT_SIZE") if market else None
+    lot_filter = _filter(info, "LOT_SIZE") or {}
+
+    def positive(source, key):
+        if not source or source.get(key) in (None, ""):
+            return None
+        value = Decimal(source[key])
+        return value if value > 0 else None
+
+    # Binance may publish MARKET_LOT_SIZE with a zero min or step. Treat those
+    # fields as unspecified while retaining any usable market-specific bounds.
+    minimum = positive(market_filter, "minQty") or positive(lot_filter, "minQty")
+    maximum = positive(market_filter, "maxQty") or positive(lot_filter, "maxQty")
+    step = positive(market_filter, "stepSize") or positive(lot_filter, "stepSize")
+    return minimum or Decimal("0"), maximum or Decimal("1E99"), step or Decimal("0")

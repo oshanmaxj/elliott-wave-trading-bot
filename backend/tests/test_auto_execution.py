@@ -52,6 +52,10 @@ def seed(session_factory, *, direction="bullish", strategy="bullish_continuation
 class Client:
     submissions = 0
     rejection = None
+    quantity_filters = [
+        {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "141.67845966", "stepSize": "0"},
+        {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+    ]
 
     def __init__(self, settings):
         pass
@@ -60,7 +64,7 @@ class Client:
         return {"price": "100"}
 
     async def exchange_info(self, symbol):
-        return {"symbols": [{"status": "TRADING", "isSpotTradingAllowed": True, "orderTypes": ["MARKET"], "filters": [{"filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "100", "stepSize": "0.0001"}, {"filterType": "MIN_NOTIONAL", "minNotional": "10"}]}]}
+        return {"symbols": [{"status": "TRADING", "isSpotTradingAllowed": True, "orderTypes": ["MARKET"], "filters": [*self.quantity_filters, {"filterType": "MIN_NOTIONAL", "minNotional": "10"}]}]}
 
     async def account(self):
         return {"balances": [{"asset": "USDT", "free": "10000"}, {"asset": "BTC", "free": "0"}]}
@@ -86,6 +90,10 @@ def executor(session_factory, monkeypatch, settings=None):
     monkeypatch.setattr("app.execution.orchestrator.load_stored_settings", lambda db, base: (None, configured))
     monkeypatch.setattr("app.execution.orchestrator.log_event", lambda *args, **kwargs: None)
     Client.submissions, Client.rejection = 0, None
+    Client.quantity_filters = [
+        {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "141.67845966", "stepSize": "0"},
+        {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+    ]
     return AutomaticTestnetExecutor(session_factory, Client, configured)
 
 
@@ -109,6 +117,21 @@ async def test_triggered_setup_passes_final_risk_engine_and_submits(session_fact
     setup_id = seed(session_factory, setup_status="triggered")
     result = await executor(session_factory, monkeypatch).handoff(setup_id)
     assert result["started"] and Client.submissions == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_quantity_steps_fail_safely_before_order_creation(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    service = executor(session_factory, monkeypatch)
+    Client.quantity_filters = [
+        {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "100", "stepSize": "0"},
+        {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0"},
+    ]
+    result = await service.handoff(setup_id)
+    assert result == {"started": False, "reason": "invalid_quantity_step"}
+    assert Client.submissions == 0
+    with session_factory() as db:
+        assert db.scalar(select(func.count(ExecutionOrder.id))) == 0
 
 
 @pytest.mark.asyncio
