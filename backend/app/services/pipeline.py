@@ -116,6 +116,7 @@ async def process_closed_candle(
     candle_id: int, broadcast: bool = True, session_factory=None
 ) -> dict:
     events: list[tuple[str, dict]] = []
+    automatic_setup_ids: list[int] = []
     session_factory = session_factory or SessionLocal
     with session_factory() as db:
         candle = db.get(Candle, candle_id)
@@ -724,6 +725,7 @@ async def process_closed_candle(
                     stage_counts["trade_setups_created"] += 1
                     log_setup_decision(db, setup)
                     if setup.status == "ready":
+                        automatic_setup_ids.append(setup.id)
                         events.append(("trade_setup_ready", serialize(setup)))
                         add_alert(
                             db,
@@ -873,6 +875,8 @@ async def process_closed_candle(
                     events.append(("trade_setup_created", serialize(setup)))
                     stage_counts["trade_setups_created"] += 1
                     log_setup_decision(db, setup)
+                    if setup.status == "ready":
+                        automatic_setup_ids.append(setup.id)
         live_setups = list(
             db.scalars(
                 select(TradeSetup).where(
@@ -994,4 +998,9 @@ async def process_closed_candle(
     if broadcast:
         for event_type, payload in events:
             await broadcaster.broadcast(event_type, payload)
+    if automatic_setup_ids:
+        from app.execution.orchestrator import AutomaticTestnetExecutor
+
+        for setup_id in automatic_setup_ids:
+            await AutomaticTestnetExecutor(session_factory=session_factory).handoff(setup_id)
     return response

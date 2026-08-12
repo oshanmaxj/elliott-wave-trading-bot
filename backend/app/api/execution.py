@@ -14,6 +14,7 @@ from app.execution.binance import (
 )
 from app.execution.service import ExecutionRiskEngine, client_order_id, setup_fingerprint
 from app.models import (
+    BotRuntimeState,
     DailyRiskLedger,
     ExchangeAccount,
     ExecutionEvent,
@@ -150,23 +151,44 @@ async def evaluate(setup_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/setups/{setup_id}/approve", dependencies=[Depends(admin)])
-def approve(setup_id: int, db: Session = Depends(get_db)):
-    setup = db.get(TradeSetup, setup_id)
+async def approve(setup_id: int, db: Session = Depends(get_db), current=Depends(admin)):
+    setup = db.scalar(select(TradeSetup).where(TradeSetup.id == setup_id).with_for_update())
     if not setup:
         raise HTTPException(404, "Trade setup not found")
+    runtime = db.scalar(select(BotRuntimeState).limit(1))
+    if not runtime or not runtime.manual_approval_required:
+        raise HTTPException(409, "Manual approval mode is not enabled")
+    if setup.status not in {"ready", "eligible", "pending_approval"}:
+        raise HTTPException(409, f"Setup is already {setup.status}")
+    expires = setup.expires_at if setup.expires_at.tzinfo else setup.expires_at.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        setup.status = "expired"
+        db.commit()
+        raise HTTPException(409, "Setup has expired")
     setup.status = "approved"
+    symbol = db.get(Symbol, setup.symbol_id)
+    db.add(ExecutionEvent(severity="INFO", event_type="setup_approved", exchange="binance", environment="testnet", symbol_id=symbol.id, trade_setup_id=setup.id, message=f"Setup approved by {current}", metadata_json={"approved_by": current}))
     db.commit()
-    return {"approved": True, "setup_id": setup_id}
+    from app.execution.orchestrator import AutomaticTestnetExecutor
+    result = await AutomaticTestnetExecutor().handoff(setup_id, manual_approved=True)
+    if not result.get("started"):
+        raise HTTPException(409, {"message": "Approval risk checks failed", "reason": result.get("reason")})
+    return {"approved": True, "setup_id": setup_id, "execution": result}
 
 
 @router.post("/setups/{setup_id}/reject", dependencies=[Depends(admin)])
-def reject(setup_id: int, db: Session = Depends(get_db)):
-    setup = db.get(TradeSetup, setup_id)
+def reject(setup_id: int, body: dict | None = None, db: Session = Depends(get_db), current=Depends(admin)):
+    setup = db.scalar(select(TradeSetup).where(TradeSetup.id == setup_id).with_for_update())
     if not setup:
         raise HTTPException(404, "Trade setup not found")
+    if setup.status not in {"ready", "eligible", "pending_approval"}:
+        raise HTTPException(409, f"Setup is already {setup.status}")
     setup.status = "rejected"
+    reason = str((body or {}).get("reason") or "Rejected by administrator")[:500]
+    symbol = db.get(Symbol, setup.symbol_id)
+    db.add(ExecutionEvent(severity="INFO", event_type="setup_rejected", exchange="binance", environment="testnet", symbol_id=symbol.id, trade_setup_id=setup.id, message=reason, metadata_json={"rejected_by": current, "reason": reason, "rejected_at": datetime.now(timezone.utc).isoformat()}))
     db.commit()
-    return {"rejected": True, "setup_id": setup_id}
+    return {"rejected": True, "setup_id": setup_id, "reason": reason}
 
 
 @router.post("/setups/{setup_id}/execute", dependencies=[Depends(admin)])
@@ -291,13 +313,16 @@ def events(db: Session = Depends(get_db)):
 
 @router.get("/approval-queue")
 def queue(db: Session = Depends(get_db)):
+    runtime = db.scalar(select(BotRuntimeState).limit(1))
+    if not runtime or not runtime.manual_approval_required:
+        return []
     return [
-        serialize(x)
+        {**serialize(x), "symbol": db.get(Symbol, x.symbol_id).symbol}
         for x in db.scalars(
             select(TradeSetup)
             .where(
                 TradeSetup.status.in_(
-                    ["ready", "eligible", "pending_approval", "approved"]
+                    ["ready", "eligible", "pending_approval"]
                 )
             )
             .order_by(TradeSetup.detected_at.desc())

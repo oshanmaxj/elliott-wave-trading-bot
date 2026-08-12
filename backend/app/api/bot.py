@@ -254,6 +254,10 @@ def strategy_diagnostics(
         reason = aliases.get(raw, raw.replace(" ", "_"))
         rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
     orders = list(db.scalars(select(ExecutionOrder).where(ExecutionOrder.submitted_at >= since)))
+    execution_event_counts = {
+        event_type: db.scalar(select(func.count(ExecutionEvent.id)).where(ExecutionEvent.created_at >= since, ExecutionEvent.event_type == event_type)) or 0
+        for event_type in ("auto_execution_started", "execution_order_created", "exchange_submission_rejected", "execution_failed")
+    }
     analysis_models = {
         "swing_points_created": (SwingPoint, SwingPoint.detected_at),
         "structure_events_created": (MarketStructureEvent, MarketStructureEvent.detected_at),
@@ -287,6 +291,9 @@ def strategy_diagnostics(
         "execution_eligible": counts["execution_eligible"],
         "orders_submitted": len(orders),
         "orders_filled": sum(row.status in {"FILLED", "filled"} for row in orders),
+        "auto_execution_started": execution_event_counts["auto_execution_started"],
+        "orders_created": execution_event_counts["execution_order_created"],
+        "orders_rejected_failed": execution_event_counts["exchange_submission_rejected"] + execution_event_counts["execution_failed"],
         "rejection_reasons": rejection_reasons,
         "analysis_activity": analysis_activity,
         "latest_analysis_by_market": latest_by_market,

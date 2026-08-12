@@ -1,0 +1,175 @@
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import func, select
+
+from app.core.config import Settings
+from app.execution.binance import BinanceError
+from app.execution.orchestrator import AutomaticTestnetExecutor
+from app.api.execution import queue
+from app.models import BotRuntimeState, ExecutionEvent, ExecutionOrder, Symbol, TradeSetup
+
+
+def execution_settings(**updates):
+    values = dict(
+        binance_execution_enabled=True,
+        binance_environment="testnet",
+        execution_mode="automatic_testnet",
+        execution_require_manual_approval=False,
+        binance_api_key="test-key",
+        binance_api_secret="test-secret",
+        allowed_execution_symbols="BTCUSDT,ETHUSDT",
+        allowed_execution_strategies="bullish_continuation",
+        min_execution_confidence=Decimal("75"),
+        max_risk_per_trade_pct=Decimal("0.25"),
+        max_daily_loss_pct=Decimal("1"),
+        max_symbol_exposure_pct=Decimal("10"),
+        max_open_positions=1,
+        allow_production_orders=False,
+    )
+    values.update(updates)
+    return Settings(**values)
+
+
+def seed(session_factory, *, direction="bullish", status="running", paused=False, automatic=True, enabled=True, kill=False, invalid_geometry=False):
+    now = datetime.now(timezone.utc)
+    with session_factory.begin() as db:
+        symbol = Symbol(exchange="binance", symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT", market_type="spot")
+        db.add(symbol)
+        db.flush()
+        stop = Decimal("105") if invalid_geometry else Decimal("95")
+        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy="bullish_continuation", status="ready", higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("105"), take_profit_2=Decimal("110"), take_profit_3=Decimal("115"), risk_reward_1=1, risk_reward_2=2, risk_reward_3=3, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
+        db.add(setup)
+        db.add(BotRuntimeState(status=status, environment="testnet", automatic_trading_enabled=automatic, manual_approval_required=False, pause_new_entries=paused, kill_switch_enabled=kill, enabled_symbols_json=["BTCUSDT"] if enabled else [], enabled_timeframes_json=["1m"] if enabled else [], enabled_strategies_json=["bullish_continuation"] if enabled else []))
+        db.flush()
+        return setup.id
+
+
+class Client:
+    submissions = 0
+    rejection = None
+
+    def __init__(self, settings):
+        pass
+
+    async def ticker_price(self, symbol):
+        return {"price": "100"}
+
+    async def exchange_info(self, symbol):
+        return {"symbols": [{"status": "TRADING", "isSpotTradingAllowed": True, "orderTypes": ["MARKET"], "filters": [{"filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "100", "stepSize": "0.0001"}, {"filterType": "MIN_NOTIONAL", "minNotional": "10"}]}]}
+
+    async def account(self):
+        return {"balances": [{"asset": "USDT", "free": "10000"}, {"asset": "BTC", "free": "0"}]}
+
+    async def test_order(self, params):
+        return {}
+
+    async def place_order(self, params):
+        type(self).submissions += 1
+        if self.rejection:
+            raise self.rejection
+        return {"orderId": 77, "status": "NEW", "executedQty": "0"}
+
+    async def get_order(self, symbol, client_order_id):
+        return {"orderId": 77, "status": "NEW", "executedQty": "0"}
+
+    async def close(self):
+        pass
+
+
+def executor(session_factory, monkeypatch, settings=None):
+    configured = settings or execution_settings()
+    monkeypatch.setattr("app.execution.orchestrator.load_stored_settings", lambda db, base: (None, configured))
+    monkeypatch.setattr("app.execution.orchestrator.log_event", lambda *args, **kwargs: None)
+    Client.submissions, Client.rejection = 0, None
+    return AutomaticTestnetExecutor(session_factory, Client, configured)
+
+
+@pytest.mark.asyncio
+async def test_eligible_automatic_testnet_setup_submits_exactly_once(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    service = executor(session_factory, monkeypatch)
+    first = await service.handoff(setup_id)
+    second = await service.handoff(setup_id)
+    assert first["started"], first
+    assert second["reason"] == "duplicate_setup_window"
+    assert Client.submissions == 1
+    with session_factory() as db:
+        order = db.scalar(select(ExecutionOrder))
+        assert order.exchange_order_id == "77" and order.status == "NEW"
+        assert db.scalar(select(func.count(ExecutionOrder.id))) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "settings_updates,seed_updates,reason",
+    [
+        ({}, {"automatic": False}, "automatic_trading_disabled"),
+        ({}, {"status": "stopped"}, "bot_not_running"),
+        ({}, {"paused": True}, "new_entries_paused"),
+        ({}, {"kill": True}, "kill_switch_enabled"),
+        ({}, {"enabled": False}, "symbol_not_enabled"),
+        ({}, {"direction": "bearish"}, "spot_sell_requires_asset_balance"),
+    ],
+)
+async def test_automatic_handoff_safety_skips(settings_updates, seed_updates, reason, session_factory, monkeypatch):
+    setup_id = seed(session_factory, **seed_updates)
+    result = await executor(session_factory, monkeypatch, execution_settings(**settings_updates)).handoff(setup_id)
+    assert result == {"started": False, "reason": reason}
+    assert Client.submissions == 0
+    with session_factory() as db:
+        event = db.scalar(select(ExecutionEvent).where(ExecutionEvent.event_type == "auto_execution_skipped"))
+        assert event.metadata_json["reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_binance_rejection_is_persisted(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    service = executor(session_factory, monkeypatch)
+    Client.rejection = BinanceError("test rejection", code=-1013, status=400)
+    result = await service.handoff(setup_id)
+    assert result["started"] and result["reason"] == "test rejection"
+    with session_factory() as db:
+        order = db.scalar(select(ExecutionOrder))
+        assert order.execution_state == "rejected" and order.rejection_reason == "test rejection"
+
+
+@pytest.mark.asyncio
+async def test_invalid_geometry_never_reaches_binance_and_reason_is_persisted(session_factory, monkeypatch):
+    setup_id = seed(session_factory, invalid_geometry=True)
+    result = await executor(session_factory, monkeypatch).handoff(setup_id)
+    assert result["reason"] == "invalid_stop_side" and Client.submissions == 0
+    with session_factory() as db:
+        event = db.scalar(select(ExecutionEvent).where(ExecutionEvent.event_type == "auto_execution_skipped").order_by(ExecutionEvent.id.desc()))
+        assert "invalid_stop_side" in event.metadata_json["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_submission_reconciles_by_client_id_without_resubmit(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    service = executor(session_factory, monkeypatch)
+    Client.rejection = BinanceError("timeout", unknown=True)
+    first = await service.handoff(setup_id)
+    second = await service.handoff(setup_id)
+    assert first["started"] and first["status"] == "NEW"
+    assert second["reason"] == "duplicate_setup_window"
+    assert Client.submissions == 1
+    with session_factory() as db:
+        assert db.scalar(select(ExecutionOrder)).execution_state == "reconciled"
+
+
+def test_automatic_mode_does_not_put_eligible_setup_in_approval_queue(session_factory):
+    seed(session_factory)
+    with session_factory() as db:
+        assert queue(db) == []
+
+
+def test_manual_mode_returns_pending_setup_with_symbol(session_factory):
+    setup_id = seed(session_factory, automatic=False)
+    with session_factory.begin() as db:
+        runtime = db.scalar(select(BotRuntimeState))
+        runtime.manual_approval_required = True
+    with session_factory() as db:
+        rows = queue(db)
+        assert len(rows) == 1 and rows[0]["id"] == setup_id and rows[0]["symbol"] == "BTCUSDT"

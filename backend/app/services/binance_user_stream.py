@@ -378,7 +378,7 @@ class BinanceUserStreamService:
             db.add(
                 ExecutionEvent(
                     severity="INFO",
-                    event_type="user_stream_order_update",
+                    event_type="execution_filled" if event["status"] == "FILLED" else "user_stream_order_update",
                     exchange="binance",
                     environment=order.environment,
                     symbol_id=order.symbol_id,
@@ -405,7 +405,7 @@ class BinanceUserStreamService:
         log_event(
             "INFO",
             "execution",
-            "user_stream_fill" if fill_added else "user_stream_order_update",
+            "execution_filled" if event["status"] == "FILLED" else "user_stream_fill" if fill_added else "user_stream_order_update",
             "Binance managed order update received",
             payload,
         )
