@@ -8,6 +8,7 @@ from app.fvg.detector import FVGConfig, detect_fvg, mitigation_update
 from app.indicators.service import calculate_indicators
 from app.elliott.service import process_elliott_candidates
 from app.elliott.setups import select_wave_strategy
+from app.execution.strategies import runtime_strategy_for_setup_name
 from app.models import (
     Alert,
     AnalysisSnapshot,
@@ -879,6 +880,9 @@ async def process_closed_candle(
                         },
                         setup_conditions_json={
                             **decision.conditions,
+                            "originating_runtime_strategy_id": runtime_strategy_for_setup_name(
+                                wave_strategy
+                            ),
                             "wave": wave_label,
                             "wave_count_id": primary_wave.id,
                             "risk_factor": wave_risk_factor,

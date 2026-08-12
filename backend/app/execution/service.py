@@ -77,7 +77,7 @@ class ExecutionRiskEngine:
         if symbol.symbol not in self.s.allowed_execution_symbols:
             reasons.append("symbol_not_allowed")
         if setup.strategy not in self.s.allowed_execution_strategies:
-            reasons.append("strategy_not_allowed")
+            reasons.append("execution_strategy_not_allowed")
         runtime = db.scalar(select(BotRuntimeState).limit(1))
         enabled_timeframes = (
             runtime.enabled_timeframes_json if runtime else ["15m", "1h", "4h"]

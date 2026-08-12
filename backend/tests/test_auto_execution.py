@@ -35,16 +35,16 @@ def execution_settings(**updates):
     return Settings(**values)
 
 
-def seed(session_factory, *, direction="bullish", status="running", setup_status="ready", paused=False, automatic=True, enabled=True, kill=False, invalid_geometry=False):
+def seed(session_factory, *, direction="bullish", strategy="bullish_continuation", runtime_strategies=None, status="running", setup_status="ready", paused=False, automatic=True, enabled=True, kill=False, invalid_geometry=False):
     now = datetime.now(timezone.utc)
     with session_factory.begin() as db:
         symbol = Symbol(exchange="binance", symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT", market_type="spot")
         db.add(symbol)
         db.flush()
         stop = Decimal("105") if invalid_geometry else Decimal("95")
-        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy="bullish_continuation", status=setup_status, higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("105"), take_profit_2=Decimal("110"), take_profit_3=Decimal("115"), risk_reward_1=1, risk_reward_2=2, risk_reward_3=3, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
+        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy=strategy, status=setup_status, higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("105"), take_profit_2=Decimal("110"), take_profit_3=Decimal("115"), risk_reward_1=1, risk_reward_2=2, risk_reward_3=3, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
         db.add(setup)
-        db.add(BotRuntimeState(status=status, environment="testnet", automatic_trading_enabled=automatic, manual_approval_required=False, pause_new_entries=paused, kill_switch_enabled=kill, enabled_symbols_json=["BTCUSDT"] if enabled else [], enabled_timeframes_json=["1m"] if enabled else [], enabled_strategies_json=["bullish_continuation"] if enabled else []))
+        db.add(BotRuntimeState(status=status, environment="testnet", automatic_trading_enabled=automatic, manual_approval_required=False, pause_new_entries=paused, kill_switch_enabled=kill, enabled_symbols_json=["BTCUSDT"] if enabled else [], enabled_timeframes_json=["1m"] if enabled else [], enabled_strategies_json=(runtime_strategies or ["bos_continuation"]) if enabled else []))
         db.flush()
         return setup.id
 
@@ -109,6 +109,74 @@ async def test_triggered_setup_passes_final_risk_engine_and_submits(session_fact
     setup_id = seed(session_factory, setup_status="triggered")
     result = await executor(session_factory, monkeypatch).handoff(setup_id)
     assert result["started"] and Client.submissions == 1
+
+
+@pytest.mark.asyncio
+async def test_liquidity_reversal_maps_to_enabled_runtime_strategy(session_factory, monkeypatch):
+    setup_id = seed(
+        session_factory,
+        direction="bearish",
+        strategy="bearish_liquidity_reversal",
+        runtime_strategies=["liquidity_sweep_reversal"],
+    )
+    settings = execution_settings(
+        allowed_execution_strategies="bearish_liquidity_reversal"
+    )
+    result = await executor(session_factory, monkeypatch, settings).handoff(setup_id)
+    assert result["reason"] == "spot_sell_requires_asset_balance"
+
+
+@pytest.mark.asyncio
+async def test_disabled_originating_strategy_is_blocked(session_factory, monkeypatch):
+    setup_id = seed(
+        session_factory,
+        strategy="bullish_liquidity_reversal",
+        runtime_strategies=["bos_continuation"],
+    )
+    settings = execution_settings(
+        allowed_execution_strategies="bullish_liquidity_reversal"
+    )
+    result = await executor(session_factory, monkeypatch, settings).handoff(setup_id)
+    assert result["reason"] == "originating_strategy_not_enabled"
+
+
+@pytest.mark.asyncio
+async def test_execution_allowlist_is_a_separate_strategy_gate(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    result = await executor(
+        session_factory,
+        monkeypatch,
+        execution_settings(allowed_execution_strategies="bullish_c_wave"),
+    ).handoff(setup_id)
+    assert result["reason"] == "execution_strategy_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_unknown_setup_strategy_is_safely_blocked(session_factory, monkeypatch):
+    setup_id = seed(
+        session_factory,
+        strategy="unknown_strategy",
+        runtime_strategies=["bos_continuation"],
+    )
+    result = await executor(
+        session_factory,
+        monkeypatch,
+        execution_settings(allowed_execution_strategies="unknown_strategy"),
+    ).handoff(setup_id)
+    assert result["reason"] == "strategy_mapping_missing"
+
+
+@pytest.mark.asyncio
+async def test_c_wave_maps_to_c_wave_runtime_strategy(session_factory, monkeypatch):
+    setup_id = seed(
+        session_factory,
+        direction="bearish",
+        strategy="bearish_c_wave",
+        runtime_strategies=["c_wave_reversal"],
+    )
+    settings = execution_settings(allowed_execution_strategies="bearish_c_wave")
+    result = await executor(session_factory, monkeypatch, settings).handoff(setup_id)
+    assert result["reason"] == "spot_sell_requires_asset_balance"
 
 
 @pytest.mark.asyncio

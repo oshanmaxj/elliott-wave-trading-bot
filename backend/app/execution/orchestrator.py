@@ -10,6 +10,7 @@ from app.database.session import SessionLocal
 from app.execution.binance import BinanceError, BinanceSpotClient
 from app.execution.credentials import load_stored_settings
 from app.execution.service import ExecutionRiskEngine, client_order_id, setup_fingerprint
+from app.execution.strategies import originating_runtime_strategy
 from app.models import (
     BotRuntimeState,
     DailyRiskLedger,
@@ -56,8 +57,13 @@ class AutomaticTestnetExecutor:
             reasons.append("symbol_not_enabled")
         if runtime and setup.setup_timeframe not in runtime.enabled_timeframes_json:
             reasons.append("timeframe_not_enabled")
-        if runtime and setup.strategy not in runtime.enabled_strategies_json:
-            reasons.append("strategy_not_enabled")
+        if setup.strategy not in self.settings.allowed_execution_strategies:
+            reasons.append("execution_strategy_not_allowed")
+        origin = originating_runtime_strategy(setup)
+        if not origin:
+            reasons.append("strategy_mapping_missing")
+        elif runtime and origin not in runtime.enabled_strategies_json:
+            reasons.append("originating_strategy_not_enabled")
         if setup.direction != "bullish":
             reasons.append("spot_sell_requires_asset_balance")
         ledger = db.scalar(select(DailyRiskLedger).where(DailyRiskLedger.exchange == "binance", DailyRiskLedger.environment == "testnet").order_by(DailyRiskLedger.created_at.desc()))

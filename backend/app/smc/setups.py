@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.core.constants import TIMEFRAME_MS
+from app.execution.strategies import runtime_strategy_for_setup_name
 from app.trading.validation import validate_geometry
 
 
@@ -142,7 +143,8 @@ def generate_setup(direction: str, structure_event: Any, candle: Any, settings: 
     status = "rejected" if reasons else "ready" if score >= 70 else "watching"
     expires = candle.close_time + timedelta(milliseconds=TIMEFRAME_MS[candle.timeframe] * settings.setup_expiry_candles)
     stop_source = "sweep" if sweep else "order_block" if block else "structure"
-    return SetupDecision(direction, strategy, status, fvg, block, entry_min, entry_max, preferred, stop if preferred is not None else None, targets, rrs, score, breakdown, {"counter_trend": counter_trend, "structure_event": structure_event.event_type, "zone_overlap": bool(fvg and block), "stop_source": stop_source, "structural_target_candidates": [str(value) for value in structural_candidates], "rejected_analysis_targets": [str(value) for value in rejected_targets], "target_diagnostics": target_diagnostics}, list(dict.fromkeys(reasons)), expires)
+    originating_strategy = runtime_strategy_for_setup_name(strategy)
+    return SetupDecision(direction, strategy, status, fvg, block, entry_min, entry_max, preferred, stop if preferred is not None else None, targets, rrs, score, breakdown, {"counter_trend": counter_trend, "structure_event": structure_event.event_type, "zone_overlap": bool(fvg and block), "stop_source": stop_source, "originating_runtime_strategy_id": originating_strategy, "structural_target_candidates": [str(value) for value in structural_candidates], "rejected_analysis_targets": [str(value) for value in rejected_targets], "target_diagnostics": target_diagnostics}, list(dict.fromkeys(reasons)), expires)
 
 
 def update_setup_lifecycle(setup: Any, candle: Any) -> str | None:
