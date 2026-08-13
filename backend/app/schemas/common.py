@@ -35,6 +35,17 @@ class CandleData(BaseModel):
     taker_buy_quote_volume: Decimal
     is_closed: bool
 
+    @field_validator("open_time", "close_time", mode="before")
+    @classmethod
+    def canonical_utc_timestamp(cls, value):
+        if isinstance(value, datetime):
+            return (
+                value.replace(tzinfo=timezone.utc)
+                if value.tzinfo is None
+                else value.astimezone(timezone.utc)
+            )
+        return value
+
 
 class CandleOut(CandleData, ORMModel):
     id: int

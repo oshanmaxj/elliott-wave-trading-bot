@@ -12,7 +12,7 @@ def ensure_symbol(db: Session, symbol: str) -> Symbol:
     if existing:
         return existing
     quote = "USDT"
-    row = Symbol(exchange="binance", symbol=symbol, base_asset=symbol.removesuffix(quote), quote_asset=quote, market_type="usdt_perpetual")
+    row = Symbol(exchange="binance", symbol=symbol, base_asset=symbol.removesuffix(quote), quote_asset=quote, market_type="spot")
     db.add(row)
     db.flush()
     return row
@@ -38,4 +38,3 @@ def candle_range(db: Session, symbol_id: int, timeframe: str, start: datetime | 
     if end:
         query = query.where(Candle.open_time <= end)
     return list(db.scalars(query.order_by(Candle.open_time.asc()).limit(limit)))
-

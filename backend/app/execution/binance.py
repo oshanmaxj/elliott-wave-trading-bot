@@ -151,6 +151,19 @@ class BinanceSpotClient:
             "POST", "/api/v3/order", params=params, signed=True, trading=True
         )
 
+    async def place_oco_order(self, params):
+        return await self.request(
+            "POST", "/api/v3/orderList/oco", params=params, signed=True, trading=True
+        )
+
+    async def get_order_list(self, order_list_id):
+        return await self.request(
+            "GET",
+            "/api/v3/orderList",
+            params={"orderListId": order_list_id},
+            signed=True,
+        )
+
     async def cancel_order(self, symbol, client_order_id):
         return await self.request(
             "DELETE",

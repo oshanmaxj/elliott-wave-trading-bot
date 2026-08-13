@@ -2,12 +2,13 @@ import asyncio
 import hashlib
 import hmac
 import json
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from urllib.parse import urlencode
 import pytest
 from sqlalchemy import select
-from app.models import ExecutionFill, ExecutionOrder, LivePosition, Symbol
+from app.models import ExecutionFill, ExecutionOrder, LivePosition, ProtectiveOrder, Symbol, TradeSetup
 from app.services import binance_user_stream as module
 from app.services.binance_user_stream import BinanceUserStreamService, normalize_event
 
@@ -179,12 +180,49 @@ def test_normalizes_order_and_balance_events():
 @pytest.mark.asyncio
 async def test_fill_is_idempotent_and_position_is_updated(monkeypatch, session_factory):
     monkeypatch.setattr(module, "log_event", lambda *a, **k: None)
+    protected = []
+
+    async def establish(self, position_id):
+        protected.append(position_id)
+        return {"protected": True}
+
+    monkeypatch.setattr(
+        "app.execution.protection.SpotProtectionService.establish", establish
+    )
     with session_factory.begin() as db:
         symbol = Symbol(
             symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT", market_type="spot"
         )
         db.add(symbol)
         db.flush()
+        now = datetime.now(timezone.utc)
+        db.add(
+            TradeSetup(
+                id=99,
+                symbol_id=symbol.id,
+                direction="bullish",
+                strategy="bullish_continuation",
+                status="executed",
+                higher_timeframe="5m",
+                setup_timeframe="1m",
+                entry_timeframe="1m",
+                structure_event_id=1,
+                entry_min=Decimal("49000"),
+                entry_max=Decimal("51000"),
+                preferred_entry=Decimal("50000"),
+                stop_loss=Decimal("48000"),
+                invalidation_price=Decimal("48000"),
+                take_profit_1=Decimal("54000"),
+                take_profit_2=Decimal("56000"),
+                take_profit_3=Decimal("58000"),
+                risk_reward_1=Decimal("2"),
+                risk_reward_2=Decimal("3"),
+                risk_reward_3=Decimal("4"),
+                confidence_score=Decimal("90"),
+                expires_at=now + timedelta(hours=1),
+                detected_at=now,
+            )
+        )
         db.add(
             ExecutionOrder(
                 environment="testnet",
@@ -234,6 +272,35 @@ async def test_fill_is_idempotent_and_position_is_updated(monkeypatch, session_f
             and position.status == "open"
             and position.remaining_quantity == Decimal("0.1999")
         )
+        assert (position.stop_loss, position.take_profit_1, position.take_profit_2, position.take_profit_3) == (
+            Decimal("48000"), Decimal("54000"), Decimal("56000"), Decimal("58000")
+        )
+        assert protected == [position.id]
+
+
+@pytest.mark.asyncio
+async def test_protective_take_profit_fill_closes_position(monkeypatch, session_factory):
+    monkeypatch.setattr(module, "log_event", lambda *a, **k: None)
+    now = datetime.now(timezone.utc)
+    with session_factory.begin() as db:
+        symbol = Symbol(symbol="BTCUSDT", base_asset="BTC", quote_asset="USDT", market_type="spot")
+        db.add(symbol)
+        db.flush()
+        setup = TradeSetup(id=100, symbol_id=symbol.id, direction="bullish", strategy="bullish_continuation", status="executed", higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=Decimal("95"), invalidation_price=Decimal("95"), take_profit_1=Decimal("110"), risk_reward_1=Decimal("2"), confidence_score=Decimal("90"), expires_at=now+timedelta(hours=1), detected_at=now)
+        db.add(setup)
+        db.flush()
+        position = LivePosition(environment="testnet", symbol_id=symbol.id, originating_trade_setup_id=setup.id, direction="long", status="open", base_quantity=Decimal(".2"), remaining_quantity=Decimal(".2"), average_entry=Decimal("100"), stop_loss=Decimal("95"), take_profit_1=Decimal("110"), protection_status="protected", opened_at=now)
+        db.add(position)
+        db.flush()
+        db.add(ProtectiveOrder(live_position_id=position.id, environment="testnet", symbol_id=symbol.id, order_list_id="901", list_client_order_id="ws-test-1-protect", stop_client_order_id="ws-test-1-sl", take_profit_client_order_id="ws-test-1-tp1", quantity=Decimal(".2"), stop_price=Decimal("95"), take_profit_price=Decimal("110"), status="protected"))
+    event = normalize_event({"event":{"e":"executionReport","E":1700000000000,"T":1700000000001,"s":"BTCUSDT","c":"ws-test-1-tp1","i":902,"S":"SELL","o":"LIMIT_MAKER","x":"TRADE","X":"FILLED","z":".2","Z":"22","l":".2","L":"110","n":"0.02","N":"USDT","t":10}})
+    await BinanceUserStreamService(session_factory=session_factory).process_event(event)
+    with session_factory() as db:
+        position = db.scalar(select(LivePosition))
+        protection = db.scalar(select(ProtectiveOrder))
+        assert position.status == "closed" and position.remaining_quantity == 0
+        assert position.protection_status == "closed"
+        assert protection.status == "closed"
 
 
 @pytest.mark.asyncio

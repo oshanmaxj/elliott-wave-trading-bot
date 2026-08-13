@@ -46,7 +46,7 @@ class BinanceRESTClient:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=20) as client:
             for attempt in range(self.max_retries):
                 try:
-                    response = await client.get("/fapi/v1/klines", params=params)
+                    response = await client.get("/api/v3/klines", params=params)
                     if response.status_code in {418, 429} or response.status_code >= 500:
                         delay = min(30, 2 ** attempt)
                         if "Retry-After" in response.headers:
@@ -66,7 +66,7 @@ class BinanceRESTClient:
 
     async def fetch_price(self, symbol: str) -> Decimal:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
-            response = await client.get("/fapi/v1/ticker/price", params={"symbol": symbol})
+            response = await client.get("/api/v3/ticker/price", params={"symbol": symbol})
             response.raise_for_status()
             return Decimal(response.json()["price"])
 

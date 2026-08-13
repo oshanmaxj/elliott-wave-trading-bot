@@ -21,6 +21,16 @@ def round_price_to_tick(value: Decimal, tick: Decimal) -> Decimal:
     return floor_quantity_to_step(value, tick)
 
 
+def price_tick(info: dict) -> Decimal:
+    price_filter = _filter(info, "PRICE_FILTER") or {}
+    tick = Decimal(price_filter.get("tickSize", "0"))
+    return tick if tick > 0 else Decimal("0")
+
+
+def serialize_price(value: Decimal, tick: Decimal) -> str:
+    return serialize_quantity(value, tick)
+
+
 def _filter(info, kind):
     return next(
         (x for x in info.get("filters", []) if x.get("filterType") == kind), None

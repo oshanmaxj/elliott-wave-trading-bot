@@ -20,6 +20,7 @@ from app.models import (
     ExecutionEvent,
     ExecutionOrder,
     LivePosition,
+    ProtectiveOrder,
     Symbol,
     TradeSetup,
 )
@@ -299,6 +300,28 @@ def position(row_id: int, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(404, "Position not found")
     return serialize(row)
+
+
+@router.get("/positions/{row_id}/protection")
+def position_protection(row_id: int, db: Session = Depends(get_db)):
+    position = db.get(LivePosition, row_id)
+    if not position:
+        raise HTTPException(404, "Position not found")
+    return [
+        serialize(row)
+        for row in db.scalars(
+            select(ProtectiveOrder)
+            .where(ProtectiveOrder.live_position_id == row_id)
+            .order_by(ProtectiveOrder.id.desc())
+        )
+    ]
+
+
+@router.post("/positions/{row_id}/protection/reconcile", dependencies=[Depends(admin)])
+async def reconcile_position_protection(row_id: int):
+    from app.execution.protection import spot_protection_service
+
+    return await spot_protection_service.reconcile(row_id)
 
 
 @router.get("/events")

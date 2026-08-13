@@ -21,7 +21,9 @@ from app.models import (
     ExecutionFill,
     ExecutionOrder,
     LivePosition,
+    ProtectiveOrder,
     Symbol,
+    TradeSetup,
 )
 from app.services.broadcast import broadcaster
 
@@ -316,6 +318,16 @@ class BinanceUserStreamService:
                 )
             )
             if not order:
+                protection = db.scalar(
+                    select(ProtectiveOrder).where(
+                        (ProtectiveOrder.stop_client_order_id == event["client_order_id"])
+                        | (ProtectiveOrder.take_profit_client_order_id == event["client_order_id"])
+                    )
+                )
+                if protection:
+                    self._process_protective_order(db, protection, event)
+                    db.commit()
+                    return
                 db.add(
                     ExecutionEvent(
                         severity="INFO",
@@ -373,8 +385,9 @@ class BinanceUserStreamService:
                 except IntegrityError:
                     db.rollback()
                     return
+            position_id = None
             if fill_added:
-                self._update_position(db, order, event, now)
+                position_id = self._update_position(db, order, event, now)
             db.add(
                 ExecutionEvent(
                     severity="INFO",
@@ -410,6 +423,12 @@ class BinanceUserStreamService:
             payload,
         )
         await broadcaster.broadcast("execution_order_update", payload)
+        if position_id and event["side"] == "BUY" and event["status"] == "FILLED":
+            from app.execution.protection import SpotProtectionService
+
+            await SpotProtectionService(
+                session_factory=self.session_factory
+            ).establish(position_id)
 
     def _update_position(self, db, order, event, now):
         symbol = db.get(Symbol, order.symbol_id)
@@ -429,6 +448,7 @@ class BinanceUserStreamService:
                 else Decimal("0")
             )
             if not position:
+                setup = db.get(TradeSetup, order.trade_setup_id)
                 position = LivePosition(
                     environment=order.environment,
                     symbol_id=order.symbol_id,
@@ -438,7 +458,11 @@ class BinanceUserStreamService:
                     base_quantity=owned,
                     remaining_quantity=owned,
                     average_entry=event["last_price"],
-                    stop_loss=Decimal("0"),
+                    stop_loss=setup.stop_loss if setup and setup.stop_loss is not None else Decimal("0"),
+                    take_profit_1=setup.take_profit_1 if setup else None,
+                    take_profit_2=setup.take_profit_2 if setup else None,
+                    take_profit_3=setup.take_profit_3 if setup else None,
+                    protection_status="protection_pending",
                     opened_at=now,
                 )
                 db.add(position)
@@ -474,6 +498,68 @@ class BinanceUserStreamService:
                 position.remaining_quantity = Decimal("0")
                 position.status = "closed"
                 position.closed_at = now
+        db.flush()
+        return position.id if position else None
+
+    def _process_protective_order(self, db, protection, event):
+        position = db.get(LivePosition, protection.live_position_id)
+        symbol = db.get(Symbol, protection.symbol_id)
+        if event["client_order_id"] == protection.stop_client_order_id:
+            protection.stop_exchange_order_id = event["exchange_order_id"]
+            leg = "stop_loss"
+        else:
+            protection.take_profit_exchange_order_id = event["exchange_order_id"]
+            leg = "take_profit_1"
+        protection.raw_status_json = event["raw"]
+        now = event["transaction_time"] or event["event_time"] or datetime.now(timezone.utc)
+        if event["last_quantity"] > 0 and event["side"] == "SELL":
+            sold = min(event["last_quantity"], position.remaining_quantity)
+            quote_fee = event["commission"] if event["commission_asset"] == symbol.quote_asset else Decimal("0")
+            position.realized_pnl += (event["last_price"] - position.average_entry) * sold - quote_fee
+            position.total_fees += quote_fee
+            position.remaining_quantity -= sold
+        if event["status"] == "FILLED":
+            protection.status = "closed"
+            protection.closed_at = now
+            if position.remaining_quantity <= 0:
+                position.remaining_quantity = Decimal("0")
+                position.status = "closed"
+                position.protection_status = "closed"
+                position.closed_at = now
+            else:
+                position.status = "partially_closed"
+                position.protection_status = "partially_protected"
+            event_type, severity = "protection_exit_filled", "INFO"
+        elif event["status"] in {"REJECTED", "EXPIRED"}:
+            protection.status = "protection_failed"
+            protection.rejection_reason = event["status"].lower()
+            position.protection_status = "unprotected"
+            event_type, severity = "protection_failed", "CRITICAL"
+        elif event["status"] == "CANCELED" and position.status != "closed":
+            protection.status = "protection_failed"
+            protection.rejection_reason = "protective_leg_canceled"
+            position.protection_status = "unprotected"
+            event_type, severity = "protection_failed", "CRITICAL"
+        else:
+            event_type, severity = "protection_order_update", "INFO"
+        db.add(
+            ExecutionEvent(
+                severity=severity,
+                event_type=event_type,
+                exchange="binance",
+                environment=protection.environment,
+                symbol_id=symbol.id,
+                trade_setup_id=position.originating_trade_setup_id,
+                live_position_id=position.id,
+                message=f"Protective {leg} updated to {event['status']}",
+                metadata_json={
+                    "leg": leg,
+                    "status": event["status"],
+                    "client_order_id": event["client_order_id"],
+                    "remaining_quantity": str(position.remaining_quantity),
+                },
+            )
+        )
 
 
 user_stream = BinanceUserStreamService()

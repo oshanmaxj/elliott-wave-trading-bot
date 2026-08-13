@@ -720,6 +720,9 @@ class LivePosition(Base, TimestampMixin):
     take_profit_1: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
     take_profit_2: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
     take_profit_3: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    protection_status: Mapped[str] = mapped_column(
+        String(32), default="unprotected", index=True
+    )
     realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
     unrealized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
     total_fees: Mapped[Decimal] = mapped_column(price_type, default=0)
@@ -727,6 +730,37 @@ class LivePosition(Base, TimestampMixin):
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class ProtectiveOrder(Base, TimestampMixin):
+    __tablename__ = "protective_orders"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    live_position_id: Mapped[int] = mapped_column(
+        ForeignKey("live_positions.id", ondelete="CASCADE"), index=True
+    )
+    environment: Mapped[str] = mapped_column(String(16), index=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)
+    order_list_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    list_client_order_id: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    stop_client_order_id: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    take_profit_client_order_id: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True
+    )
+    stop_exchange_order_id: Mapped[str | None] = mapped_column(String(64))
+    take_profit_exchange_order_id: Mapped[str | None] = mapped_column(String(64))
+    quantity: Mapped[Decimal] = mapped_column(price_type)
+    stop_price: Mapped[Decimal] = mapped_column(price_type)
+    take_profit_price: Mapped[Decimal] = mapped_column(price_type)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    raw_status_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    rejection_reason: Mapped[str | None] = mapped_column(String(500))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ExecutionEvent(Base):
