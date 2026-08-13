@@ -2,11 +2,15 @@ from decimal import Decimal
 import hashlib
 import hmac
 from types import SimpleNamespace
+from urllib.parse import parse_qs
+import httpx
+import pytest
 from app.execution.binance import BinanceSpotClient
 from app.execution.filters import (
     floor_quantity_to_step,
     quantity_limits,
     round_price_to_tick,
+    serialize_quantity,
     validate_notional,
 )
 from app.execution.service import client_order_id
@@ -43,6 +47,44 @@ def test_decimal_filters_round_down_without_float():
     assert validate_notional(Decimal("2"), Decimal("4.9"), info) == [
         "notional_below_minimum"
     ]
+
+
+@pytest.mark.parametrize(
+    "quantity,step,expected",
+    [
+        (Decimal("0.530300000000"), Decimal("0.00001000"), "0.5303"),
+        (Decimal("1.23456789"), Decimal("0.00001000"), "1.23456"),
+        (Decimal("12.345600000"), Decimal("0.00100000"), "12.345"),
+        (Decimal("0.00700000"), Decimal("0.00010000"), "0.007"),
+    ],
+)
+def test_quantity_serialization_uses_decimal_step_without_excess_precision(
+    quantity, step, expected
+):
+    assert serialize_quantity(quantity, step) == expected
+
+
+@pytest.mark.asyncio
+async def test_binance_client_sends_pre_normalized_quantity_string_unchanged():
+    captured = {}
+
+    def handler(request):
+        captured.update(parse_qs(request.url.query.decode()))
+        return httpx.Response(200, json={"orderId": 1, "status": "NEW"})
+
+    client = BinanceSpotClient(
+        settings(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        quantity = serialize_quantity(
+            Decimal("0.530300000000"), Decimal("0.00001000")
+        )
+        await client.place_order(
+            {"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": quantity}
+        )
+    finally:
+        await client.close()
+    assert captured["quantity"] == ["0.5303"]
 
 
 def test_client_order_id_is_deterministic():

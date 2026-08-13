@@ -56,6 +56,7 @@ class Client:
         {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "141.67845966", "stepSize": "0"},
         {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
     ]
+    submitted_params = []
 
     def __init__(self, settings):
         pass
@@ -70,9 +71,11 @@ class Client:
         return {"balances": [{"asset": "USDT", "free": "10000"}, {"asset": "BTC", "free": "0"}]}
 
     async def test_order(self, params):
+        type(self).submitted_params.append(("test", dict(params)))
         return {}
 
     async def place_order(self, params):
+        type(self).submitted_params.append(("place", dict(params)))
         type(self).submissions += 1
         if self.rejection:
             raise self.rejection
@@ -89,7 +92,7 @@ def executor(session_factory, monkeypatch, settings=None):
     configured = settings or execution_settings()
     monkeypatch.setattr("app.execution.orchestrator.load_stored_settings", lambda db, base: (None, configured))
     monkeypatch.setattr("app.execution.orchestrator.log_event", lambda *args, **kwargs: None)
-    Client.submissions, Client.rejection = 0, None
+    Client.submissions, Client.rejection, Client.submitted_params = 0, None, []
     Client.quantity_filters = [
         {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "141.67845966", "stepSize": "0"},
         {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
@@ -106,6 +109,9 @@ async def test_eligible_automatic_testnet_setup_submits_exactly_once(session_fac
     assert first["started"], first
     assert second["reason"] == "duplicate_setup_window"
     assert Client.submissions == 1
+    assert [params["quantity"] for _, params in Client.submitted_params] == [
+        "5", "5"
+    ]
     with session_factory() as db:
         order = db.scalar(select(ExecutionOrder))
         assert order.exchange_order_id == "77" and order.status == "NEW"

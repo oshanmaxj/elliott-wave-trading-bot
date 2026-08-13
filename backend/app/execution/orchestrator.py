@@ -11,6 +11,7 @@ from app.execution.binance import BinanceError, BinanceSpotClient
 from app.execution.credentials import load_stored_settings
 from app.execution.service import ExecutionRiskEngine, client_order_id, setup_fingerprint
 from app.execution.strategies import originating_runtime_strategy
+from app.execution.filters import quantity_limits, serialize_quantity
 from app.models import (
     BotRuntimeState,
     DailyRiskLedger,
@@ -132,7 +133,11 @@ class AutomaticTestnetExecutor:
                 order.submitted_at = datetime.now(timezone.utc)
                 self._event(db, "exchange_submission_started", setup, symbol, order=order)
                 db.commit()
-                params = {"symbol": symbol.symbol, "side": "BUY", "type": "MARKET", "quantity": str(order.requested_quantity), "newClientOrderId": order.client_order_id}
+                _, _, quantity_step = quantity_limits(info)
+                quantity = serialize_quantity(
+                    Decimal(order.requested_quantity), quantity_step
+                )
+                params = {"symbol": symbol.symbol, "side": "BUY", "type": "MARKET", "quantity": quantity, "newClientOrderId": order.client_order_id}
 
             await client.test_order(params)
             response = await client.place_order(params)

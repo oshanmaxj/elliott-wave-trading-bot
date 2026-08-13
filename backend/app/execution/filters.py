@@ -7,6 +7,15 @@ def floor_quantity_to_step(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
 
 
+def serialize_quantity(value: Decimal, step: Decimal) -> str:
+    """Floor and render a Binance quantity without float or excess scale."""
+    quantity = floor_quantity_to_step(value, step)
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    rendered = format(quantity, "f").rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
 def round_price_to_tick(value: Decimal, tick: Decimal) -> Decimal:
     return floor_quantity_to_step(value, tick)
 
