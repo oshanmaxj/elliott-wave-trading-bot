@@ -85,13 +85,29 @@ def add_alert(
     return alert
 
 
-def log_setup_decision(db, setup: TradeSetup) -> None:
+def automatic_routing_enabled(runtime: BotRuntimeState | None) -> bool:
+    return bool(
+        runtime
+        and runtime.status == "running"
+        and runtime.automatic_trading_enabled
+        and not runtime.manual_approval_required
+        and not runtime.pause_new_entries
+        and not runtime.kill_switch_enabled
+    )
+
+
+def log_setup_decision(
+    db, setup: TradeSetup, *, execution_eligible: bool = False
+) -> None:
     generated = BotLog(
         level="INFO", service="analysis", event_type="setup_generated",
         message=f"Setup {setup.id} generated",
         context_json={
             "trade_setup_id": setup.id, "structure_event_id": setup.structure_event_id,
             "symbol_id": setup.symbol_id, "status": setup.status,
+            "strategy": setup.strategy,
+            "confidence_score": str(setup.confidence_score),
+            "geometry_valid": setup.setup_conditions_json.get("geometry_valid"),
         },
     )
     db.add(generated)
@@ -109,7 +125,7 @@ def log_setup_decision(db, setup: TradeSetup) -> None:
     if setup.status == "rejected":
         for reason in setup.rejection_reasons_json:
             db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="candidate_rejected", message="Strategy candidate rejected", context_json={"trade_setup_id": setup.id, "reason": reason}))
-    elif setup.status == "ready":
+    elif setup.status == "ready" and execution_eligible:
         db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Strategy candidate is execution eligible", context_json={"trade_setup_id": setup.id}))
 
 
@@ -724,8 +740,13 @@ async def process_closed_candle(
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
                     stage_counts["trade_setups_created"] += 1
-                    log_setup_decision(db, setup)
-                    if setup.status == "ready":
+                    route_automatically = automatic_routing_enabled(runtime)
+                    log_setup_decision(
+                        db,
+                        setup,
+                        execution_eligible=route_automatically,
+                    )
+                    if setup.status == "ready" and route_automatically:
                         automatic_setup_ids.append(setup.id)
                         events.append(("trade_setup_ready", serialize(setup)))
                         add_alert(
@@ -883,6 +904,7 @@ async def process_closed_candle(
                             "originating_runtime_strategy_id": runtime_strategy_for_setup_name(
                                 wave_strategy
                             ),
+                            "geometry_valid": final_geometry.valid,
                             "wave": wave_label,
                             "wave_count_id": primary_wave.id,
                             "risk_factor": wave_risk_factor,
@@ -899,8 +921,13 @@ async def process_closed_candle(
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
                     stage_counts["trade_setups_created"] += 1
-                    log_setup_decision(db, setup)
-                    if setup.status == "ready":
+                    route_automatically = automatic_routing_enabled(runtime)
+                    log_setup_decision(
+                        db,
+                        setup,
+                        execution_eligible=route_automatically,
+                    )
+                    if setup.status == "ready" and route_automatically:
                         automatic_setup_ids.append(setup.id)
         live_setups = list(
             db.scalars(
@@ -935,8 +962,8 @@ async def process_closed_candle(
             if next_status == "triggered":
                 setup.triggered_at = candle.close_time
                 db.add(BotLog(level="INFO", service="analysis", event_type="setup_triggered", message=f"Setup {setup.id} triggered", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy}))
-                db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Triggered setup is eligible for execution routing", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy, "source": "lifecycle_trigger"}))
-                if runtime and runtime.automatic_trading_enabled and not runtime.manual_approval_required:
+                if automatic_routing_enabled(runtime):
+                    db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Triggered setup is eligible for execution routing", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy, "source": "lifecycle_trigger"}))
                     automatic_setup_ids.append(setup.id)
             if next_status == "invalidated":
                 setup.invalidated_at = candle.close_time

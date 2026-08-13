@@ -58,6 +58,15 @@ class AutomaticTestnetExecutor:
             reasons.append("symbol_not_enabled")
         if runtime and setup.setup_timeframe not in runtime.enabled_timeframes_json:
             reasons.append("timeframe_not_enabled")
+        if setup.status not in {"ready", "eligible", "approved", "pending_approval", "triggered"}:
+            reasons.append("setup_not_eligible")
+        expires = setup.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= datetime.now(timezone.utc):
+            reasons.append("setup_expired")
+        if setup.rejection_reasons_json:
+            reasons.append("setup_rejected")
         if setup.strategy not in self.settings.allowed_execution_strategies:
             reasons.append("execution_strategy_not_allowed")
         origin = originating_runtime_strategy(setup)
@@ -147,12 +156,18 @@ class AutomaticTestnetExecutor:
                 symbol = db.get(Symbol, order.symbol_id)
                 order.exchange_order_id = str(response.get("orderId"))
                 order.status = response.get("status", "NEW")
-                order.execution_state = "acknowledged"
+                order.execution_state = (
+                    "filled" if order.status == "FILLED" else "acknowledged"
+                )
                 order.acknowledged_at = datetime.now(timezone.utc)
                 order.raw_status_json = response
                 order.executed_quantity = Decimal(response.get("executedQty", "0"))
-                setup.status = "acknowledged"
+                if order.status == "FILLED":
+                    order.filled_at = order.acknowledged_at
+                setup.status = "executed" if order.status == "FILLED" else "acknowledged"
                 self._event(db, "exchange_submission_acknowledged", setup, symbol, order=order, metadata={"status": order.status})
+                if order.status == "FILLED":
+                    self._event(db, "execution_filled", setup, symbol, order=order, metadata={"status": order.status, "source": "order_response"})
                 db.commit()
                 return {"started": True, "order_id": order.id, "status": order.status}
         except BinanceError as exc:
@@ -162,7 +177,16 @@ class AutomaticTestnetExecutor:
                 setup = db.get(TradeSetup, setup_id)
                 symbol = db.get(Symbol, setup.symbol_id) if setup else None
                 if setup and symbol:
-                    self._event(db, "execution_failed", setup, symbol, reason=str(exc) or type(exc).__name__, severity="ERROR")
+                    order = db.scalar(
+                        select(ExecutionOrder).where(
+                            ExecutionOrder.trade_setup_id == setup_id
+                        )
+                    )
+                    if order and order.execution_state in {"created", "submitting"}:
+                        order.status = "execution_failed"
+                        order.execution_state = "failed"
+                        order.rejection_reason = str(exc) or type(exc).__name__
+                    self._event(db, "execution_failed", setup, symbol, order=order, reason=str(exc) or type(exc).__name__, severity="ERROR")
                     db.commit()
             return {"started": False, "reason": "execution_failed"}
         finally:

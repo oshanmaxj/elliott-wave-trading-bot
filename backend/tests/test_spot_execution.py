@@ -53,9 +53,14 @@ def test_decimal_filters_round_down_without_float():
     "quantity,step,expected",
     [
         (Decimal("0.530300000000"), Decimal("0.00001000"), "0.5303"),
+        (Decimal("0.015700000000"), Decimal("0.00001000"), "0.0157"),
+        (Decimal("0.527900000000"), Decimal("0.00001000"), "0.5279"),
+        (Decimal("0.000010000000"), Decimal("0.00001000"), "0.00001"),
         (Decimal("1.23456789"), Decimal("0.00001000"), "1.23456"),
         (Decimal("12.345600000"), Decimal("0.00100000"), "12.345"),
         (Decimal("0.00700000"), Decimal("0.00010000"), "0.007"),
+        (Decimal("10.00000000"), Decimal("0.00001000"), "10"),
+        (Decimal("100.00000000"), Decimal("1.00000000"), "100"),
     ],
 )
 def test_quantity_serialization_uses_decimal_step_without_excess_precision(

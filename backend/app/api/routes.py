@@ -74,7 +74,7 @@ from app.services.binance_user_stream import user_stream
 from app.services.historical_sync import HistoricalSyncService
 from app.services.settings import get_runtime_settings, save_runtime_settings
 from app.smc.engine import multi_timeframe_bias, premium_discount, structure_score
-from app.trading.backtest import CandleCoverageError, candle_coverage, run_backtest
+from app.trading.backtest import CandleCoverageError, run_backtest
 from app.services.historical_backfill import aligned_range, historical_backfill, latest_closed_time
 from app.market_data.binance_rest import BinanceRESTClient
 from app.trading.execution import execution_fee, position_size, slipped_price
@@ -554,7 +554,7 @@ def trade_setup_detail(setup_id: int, db: Session = Depends(get_db)):
         {"rule": "Liquidity confirmation", "status": "PASS" if sweep and sweep.status == "confirmed" else ("NOT APPLICABLE" if row.setup_conditions_json.get("stop_source") != "sweep" else "FAIL"), "actual": sweep.status if sweep else None, "required": "confirmed when required"},
         {"rule": "Elliott confirmation", "status": "PASS" if wave and not wave.rules_failed_json else ("NOT APPLICABLE" if not wave else "FAIL"), "actual": wave.confidence_score if wave else None, "required": runtime.elliott_minimum_confidence},
         {"rule": "Confidence", "status": "PASS" if row.confidence_score >= minimum_confidence else "FAIL", "actual": row.confidence_score, "required": minimum_confidence},
-        {"rule": "Risk Reward", "status": "PASS" if validation.valid or "invalid_rr" not in validation.reasons else "FAIL", "actual": row.risk_reward_2, "required": runtime.minimum_reward_to_risk},
+        {"rule": "Risk Reward", "status": "PASS" if validation.valid or "invalid_rr" not in validation.reasons else "FAIL", "actual": row.risk_reward_1, "required": runtime.minimum_reward_to_risk},
     ]
     return {
         "setup": row, "symbol": symbol.symbol, "market_bias": {

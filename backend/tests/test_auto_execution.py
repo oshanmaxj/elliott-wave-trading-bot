@@ -42,7 +42,7 @@ def seed(session_factory, *, direction="bullish", strategy="bullish_continuation
         db.add(symbol)
         db.flush()
         stop = Decimal("105") if invalid_geometry else Decimal("95")
-        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy=strategy, status=setup_status, higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("105"), take_profit_2=Decimal("110"), take_profit_3=Decimal("115"), risk_reward_1=1, risk_reward_2=2, risk_reward_3=3, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
+        setup = TradeSetup(symbol_id=symbol.id, direction=direction, strategy=strategy, status=setup_status, higher_timeframe="5m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=1, entry_min=Decimal("99"), entry_max=Decimal("101"), preferred_entry=Decimal("100"), stop_loss=stop, invalidation_price=stop, take_profit_1=Decimal("110"), take_profit_2=Decimal("115"), take_profit_3=Decimal("120"), risk_reward_1=2, risk_reward_2=3, risk_reward_3=4, confidence_score=90, expires_at=now + timedelta(hours=1), detected_at=now)
         db.add(setup)
         db.add(BotRuntimeState(status=status, environment="testnet", automatic_trading_enabled=automatic, manual_approval_required=False, pause_new_entries=paused, kill_switch_enabled=kill, enabled_symbols_json=["BTCUSDT"] if enabled else [], enabled_timeframes_json=["1m"] if enabled else [], enabled_strategies_json=(runtime_strategies or ["bos_continuation"]) if enabled else []))
         db.flush()
@@ -57,6 +57,8 @@ class Client:
         {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
     ]
     submitted_params = []
+    response = {"orderId": 77, "status": "NEW", "executedQty": "0"}
+    unexpected_error = None
 
     def __init__(self, settings):
         pass
@@ -79,7 +81,9 @@ class Client:
         type(self).submissions += 1
         if self.rejection:
             raise self.rejection
-        return {"orderId": 77, "status": "NEW", "executedQty": "0"}
+        if self.unexpected_error:
+            raise self.unexpected_error
+        return dict(type(self).response)
 
     async def get_order(self, symbol, client_order_id):
         return {"orderId": 77, "status": "NEW", "executedQty": "0"}
@@ -97,6 +101,8 @@ def executor(session_factory, monkeypatch, settings=None):
         {"filterType": "MARKET_LOT_SIZE", "minQty": "0", "maxQty": "141.67845966", "stepSize": "0"},
         {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
     ]
+    Client.response = {"orderId": 77, "status": "NEW", "executedQty": "0"}
+    Client.unexpected_error = None
     return AutomaticTestnetExecutor(session_factory, Client, configured)
 
 
@@ -123,6 +129,62 @@ async def test_triggered_setup_passes_final_risk_engine_and_submits(session_fact
     setup_id = seed(session_factory, setup_status="triggered")
     result = await executor(session_factory, monkeypatch).handoff(setup_id)
     assert result["started"] and Client.submissions == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_setup_is_blocked_before_binance_client_creation(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    with session_factory.begin() as db:
+        db.get(TradeSetup, setup_id).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    result = await executor(session_factory, monkeypatch).handoff(setup_id)
+    assert result == {"started": False, "reason": "setup_expired"}
+    assert Client.submissions == 0
+
+
+@pytest.mark.asyncio
+async def test_invalidated_setup_is_blocked_before_binance_client_creation(session_factory, monkeypatch):
+    setup_id = seed(session_factory, setup_status="invalidated")
+    result = await executor(session_factory, monkeypatch).handoff(setup_id)
+    assert result == {"started": False, "reason": "setup_not_eligible"}
+    assert Client.submissions == 0
+
+
+@pytest.mark.asyncio
+async def test_immediate_market_fill_is_persisted_truthfully(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    service = executor(session_factory, monkeypatch)
+    Client.response = {"orderId": 78, "status": "FILLED", "executedQty": "5"}
+    result = await service.handoff(setup_id)
+    assert result["status"] == "FILLED"
+    with session_factory() as db:
+        order = db.scalar(select(ExecutionOrder))
+        assert order.execution_state == "filled"
+        assert order.filled_at is not None
+        assert db.scalar(
+            select(func.count(ExecutionEvent.id)).where(
+                ExecutionEvent.event_type == "execution_filled"
+            )
+        ) == 1
+
+
+@pytest.mark.asyncio
+async def test_unexpected_submission_failure_marks_persisted_order_failed(session_factory, monkeypatch):
+    setup_id = seed(session_factory)
+    service = executor(session_factory, monkeypatch)
+    Client.unexpected_error = RuntimeError("unexpected test failure")
+    result = await service.handoff(setup_id)
+    assert result == {"started": False, "reason": "execution_failed"}
+    with session_factory() as db:
+        order = db.scalar(select(ExecutionOrder))
+        assert order.status == "execution_failed"
+        assert order.execution_state == "failed"
+        assert order.rejection_reason == "unexpected test failure"
+        event = db.scalar(
+            select(ExecutionEvent).where(
+                ExecutionEvent.event_type == "execution_failed"
+            )
+        )
+        assert event.execution_order_id == order.id
 
 
 @pytest.mark.asyncio
@@ -335,6 +397,42 @@ async def test_manual_triggered_setup_is_queued_without_auto_handoff(session_fac
     with session_factory() as db:
         rows = queue(db)
         assert len(rows) == 1 and rows[0]["id"] == setup_id and rows[0]["status"] == "triggered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runtime_change",
+    [
+        {"pause_new_entries": True},
+        {"kill_switch_enabled": True},
+        {"status": "stopped"},
+        {"automatic_trading_enabled": False},
+    ],
+)
+async def test_triggered_setup_is_not_mislabeled_eligible_when_routing_disabled(
+    runtime_change, session_factory, monkeypatch
+):
+    _, candle_ids = lifecycle_seed(session_factory)
+    with session_factory.begin() as db:
+        runtime = db.scalar(select(BotRuntimeState))
+        for field, value in runtime_change.items():
+            setattr(runtime, field, value)
+    calls = []
+
+    async def handoff(self, routed_id, **kwargs):
+        calls.append(routed_id)
+
+    monkeypatch.setattr(AutomaticTestnetExecutor, "handoff", handoff)
+    await process_closed_candle(
+        candle_ids[1], broadcast=False, session_factory=session_factory
+    )
+    assert calls == []
+    with session_factory() as db:
+        assert db.scalar(
+            select(func.count(BotLog.id)).where(
+                BotLog.event_type == "execution_eligible"
+            )
+        ) == 0
 
 
 @pytest.mark.asyncio

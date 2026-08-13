@@ -12,8 +12,9 @@ def serialize_quantity(value: Decimal, step: Decimal) -> str:
     quantity = floor_quantity_to_step(value, step)
     if quantity <= 0:
         raise ValueError("quantity must be positive")
-    rendered = format(quantity, "f").rstrip("0").rstrip(".")
-    return rendered or "0"
+    whole, dot, fraction = format(quantity, "f").partition(".")
+    fraction = fraction.rstrip("0")
+    return f"{whole}.{fraction}" if dot and fraction else whole
 
 
 def round_price_to_tick(value: Decimal, tick: Decimal) -> Decimal:

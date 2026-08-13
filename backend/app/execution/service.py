@@ -10,6 +10,7 @@ from app.execution.filters import (
     validate_symbol_tradeability,
 )
 from app.models import BotRuntimeState, ExecutionOrder, LivePosition
+from app.services.settings import get_runtime_settings
 from app.trading.validation import validate_setup
 
 
@@ -102,7 +103,8 @@ class ExecutionRiskEngine:
             .limit(1)
         ):
             reasons.append("setup_already_executed")
-        geometry = validate_setup(setup, self.s.min_execution_reward_to_risk if hasattr(self.s, "min_execution_reward_to_risk") else Decimal("0"))
+        minimum_rr = Decimal(str(get_runtime_settings(db).minimum_reward_to_risk))
+        geometry = validate_setup(setup, minimum_rr)
         if not geometry.valid:
             reasons.extend(reason for reason in geometry.reasons if reason not in reasons)
         fingerprint = setup_fingerprint(symbol.symbol, setup)
@@ -150,16 +152,20 @@ class ExecutionRiskEngine:
             )
             adjusted = min(
                 adjusted,
-                floor_quantity_to_step(exposure_cap / entry, step) if entry else zero,
+                floor_quantity_to_step(exposure_cap / market_price, step)
+                if market_price
+                else zero,
             )
             adjusted = min(
                 adjusted,
-                floor_quantity_to_step(equity / entry, step) if entry else zero,
+                floor_quantity_to_step(equity / market_price, step)
+                if market_price
+                else zero,
             )
-        notional = adjusted * entry
+        notional = adjusted * market_price
         if adjusted < minimum:
             reasons.append("quantity_below_minimum")
-        reasons += validate_notional(entry, adjusted, symbol_info)
+        reasons += validate_notional(market_price, adjusted, symbol_info)
         if notional > equity:
             reasons.append("insufficient_balance")
         if (
