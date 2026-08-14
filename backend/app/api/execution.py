@@ -12,7 +12,11 @@ from app.execution.binance import (
     BinanceError,
     BinanceSpotClient,
 )
-from app.execution.service import ExecutionRiskEngine, client_order_id, setup_fingerprint
+from app.execution.service import (
+    ExecutionRiskEngine,
+    client_order_id,
+    setup_fingerprint,
+)
 from app.models import (
     BotRuntimeState,
     DailyRiskLedger,
@@ -153,7 +157,9 @@ async def evaluate(setup_id: int, db: Session = Depends(get_db)):
 
 @router.post("/setups/{setup_id}/approve", dependencies=[Depends(admin)])
 async def approve(setup_id: int, db: Session = Depends(get_db), current=Depends(admin)):
-    setup = db.scalar(select(TradeSetup).where(TradeSetup.id == setup_id).with_for_update())
+    setup = db.scalar(
+        select(TradeSetup).where(TradeSetup.id == setup_id).with_for_update()
+    )
     if not setup:
         raise HTTPException(404, "Trade setup not found")
     runtime = db.scalar(select(BotRuntimeState).limit(1))
@@ -161,25 +167,51 @@ async def approve(setup_id: int, db: Session = Depends(get_db), current=Depends(
         raise HTTPException(409, "Manual approval mode is not enabled")
     if setup.status not in {"ready", "eligible", "pending_approval"}:
         raise HTTPException(409, f"Setup is already {setup.status}")
-    expires = setup.expires_at if setup.expires_at.tzinfo else setup.expires_at.replace(tzinfo=timezone.utc)
+    expires = (
+        setup.expires_at
+        if setup.expires_at.tzinfo
+        else setup.expires_at.replace(tzinfo=timezone.utc)
+    )
     if expires <= datetime.now(timezone.utc):
         setup.status = "expired"
         db.commit()
         raise HTTPException(409, "Setup has expired")
     setup.status = "approved"
     symbol = db.get(Symbol, setup.symbol_id)
-    db.add(ExecutionEvent(severity="INFO", event_type="setup_approved", exchange="binance", environment="testnet", symbol_id=symbol.id, trade_setup_id=setup.id, message=f"Setup approved by {current}", metadata_json={"approved_by": current}))
+    db.add(
+        ExecutionEvent(
+            severity="INFO",
+            event_type="setup_approved",
+            exchange="binance",
+            environment="testnet",
+            symbol_id=symbol.id,
+            trade_setup_id=setup.id,
+            message=f"Setup approved by {current}",
+            metadata_json={"approved_by": current},
+        )
+    )
     db.commit()
     from app.execution.orchestrator import AutomaticTestnetExecutor
+
     result = await AutomaticTestnetExecutor().handoff(setup_id, manual_approved=True)
     if not result.get("started"):
-        raise HTTPException(409, {"message": "Approval risk checks failed", "reason": result.get("reason")})
+        raise HTTPException(
+            409,
+            {"message": "Approval risk checks failed", "reason": result.get("reason")},
+        )
     return {"approved": True, "setup_id": setup_id, "execution": result}
 
 
 @router.post("/setups/{setup_id}/reject", dependencies=[Depends(admin)])
-def reject(setup_id: int, body: dict | None = None, db: Session = Depends(get_db), current=Depends(admin)):
-    setup = db.scalar(select(TradeSetup).where(TradeSetup.id == setup_id).with_for_update())
+def reject(
+    setup_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    current=Depends(admin),
+):
+    setup = db.scalar(
+        select(TradeSetup).where(TradeSetup.id == setup_id).with_for_update()
+    )
     if not setup:
         raise HTTPException(404, "Trade setup not found")
     if setup.status not in {"ready", "eligible", "pending_approval"}:
@@ -187,7 +219,22 @@ def reject(setup_id: int, body: dict | None = None, db: Session = Depends(get_db
     setup.status = "rejected"
     reason = str((body or {}).get("reason") or "Rejected by administrator")[:500]
     symbol = db.get(Symbol, setup.symbol_id)
-    db.add(ExecutionEvent(severity="INFO", event_type="setup_rejected", exchange="binance", environment="testnet", symbol_id=symbol.id, trade_setup_id=setup.id, message=reason, metadata_json={"rejected_by": current, "reason": reason, "rejected_at": datetime.now(timezone.utc).isoformat()}))
+    db.add(
+        ExecutionEvent(
+            severity="INFO",
+            event_type="setup_rejected",
+            exchange="binance",
+            environment="testnet",
+            symbol_id=symbol.id,
+            trade_setup_id=setup.id,
+            message=reason,
+            metadata_json={
+                "rejected_by": current,
+                "reason": reason,
+                "rejected_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    )
     db.commit()
     return {"rejected": True, "setup_id": setup_id, "reason": reason}
 
@@ -294,6 +341,52 @@ def positions(db: Session = Depends(get_db)):
     ]
 
 
+@router.get("/position-overlays")
+def position_overlays(symbol: str, db: Session = Depends(get_db)):
+    symbol_row = db.scalar(select(Symbol).where(Symbol.symbol == symbol.upper()))
+    if not symbol_row:
+        return []
+    rows = list(
+        db.scalars(
+            select(LivePosition)
+            .where(
+                LivePosition.symbol_id == symbol_row.id,
+                LivePosition.status.in_(["open", "partially_closed"]),
+            )
+            .order_by(LivePosition.opened_at)
+        )
+    )
+    result = []
+    for position in rows:
+        setup = db.get(TradeSetup, position.originating_trade_setup_id)
+        protection = db.scalar(
+            select(ProtectiveOrder)
+            .where(ProtectiveOrder.live_position_id == position.id)
+            .order_by(ProtectiveOrder.id.desc())
+        )
+        if not setup:
+            continue
+        result.append(
+            {
+                "position_id": position.id,
+                "setup_id": setup.id,
+                "direction": setup.direction,
+                "strategy": setup.strategy,
+                "timeframe": setup.setup_timeframe,
+                "setup_status": setup.status,
+                "position_status": position.status,
+                "protection_status": position.protection_status,
+                "entry": position.average_entry,
+                "stop_loss": setup.stop_loss,
+                "take_profit_1": setup.take_profit_1,
+                "take_profit_2": setup.take_profit_2,
+                "take_profit_3": setup.take_profit_3,
+                "order_list_id": protection.order_list_id if protection else None,
+            }
+        )
+    return result
+
+
 @router.get("/positions/{row_id}")
 def position(row_id: int, db: Session = Depends(get_db)):
     row = db.get(LivePosition, row_id)
@@ -315,6 +408,14 @@ def position_protection(row_id: int, db: Session = Depends(get_db)):
             .order_by(ProtectiveOrder.id.desc())
         )
     ]
+
+
+@router.post("/positions/{row_id}/protection/establish", dependencies=[Depends(admin)])
+async def establish_position_protection(row_id: int):
+    """Explicit Testnet-only repair; never invoked automatically for old positions."""
+    from app.execution.protection import spot_protection_service
+
+    return await spot_protection_service.establish(row_id)
 
 
 @router.post("/positions/{row_id}/protection/reconcile", dependencies=[Depends(admin)])

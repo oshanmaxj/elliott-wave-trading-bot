@@ -3,7 +3,7 @@ import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMark
 
 const seconds = value => Math.floor(new Date(value).getTime() / 1000)
 
-export default function MarketChart({ candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder }) {
+export default function MarketChart({ candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, activePositions = [], waveCounts, indicators, settings, onLoadOlder }) {
   const host = useRef(null)
   const candleSeriesRef = useRef(null)
   const renderedCandlesRef = useRef([])
@@ -38,7 +38,7 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
         ...visibleSwings.map(s => { const c = candleById[s.candle_id]; return c && { time: seconds(c.open_time), position: s.swing_type === 'high' ? 'aboveBar' : 'belowBar', color: s.swing_type === 'high' ? '#ffcc66' : '#57d7ff', shape: s.swing_type === 'high' ? 'arrowDown' : 'arrowUp', text: +s.strength >= .5 ? (s.swing_type === 'high' ? 'SH' : 'SL') : (s.swing_type === 'high' ? 'iH' : 'iL') } }),
         ...structure.filter(e => (e.event_type === 'BOS' && settings.bos) || (e.event_type === 'CHoCH' && settings.choch)).map(e => { const c = candleById[e.confirmation_candle_id]; return c && { time: seconds(c.open_time), position: e.direction === 'bullish' ? 'belowBar' : 'aboveBar', color: e.event_type === 'CHoCH' ? '#f59eeb' : '#a3e635', shape: 'circle', text: e.event_type } }),
         ...sweeps.filter(s => settings.sweeps && s.status === 'confirmed').flatMap(s => { const swept = candleById[s.sweep_candle_id], confirmed = candleById[s.confirmation_candle_id]; return [swept && { time: seconds(swept.open_time), position: s.direction === 'bullish' ? 'belowBar' : 'aboveBar', color: '#fbbf24', shape: s.direction === 'bullish' ? 'arrowUp' : 'arrowDown', text: s.direction === 'bullish' ? 'SSL SWEEP' : 'BSL SWEEP' }, confirmed && confirmed.id !== swept?.id && { time: seconds(confirmed.open_time), position: s.direction === 'bullish' ? 'belowBar' : 'aboveBar', color: '#22d3ee', shape: 'circle', text: 'RECLAIM' }] }),
-        ...setups.filter(setup => settings.setups && ['ready','triggered'].includes(setup.status)).map(setup => { const event = structure.find(item => item.id === setup.structure_event_id), c = event && candleById[event.confirmation_candle_id]; return c && { time: seconds(c.open_time), position: setup.direction === 'bullish' ? 'belowBar' : 'aboveBar', color: '#c084fc', shape: 'square', text: `${setup.status.toUpperCase()} SETUP` } }),
+        ...setups.filter(setup => settings.setups && ['ready','triggered'].includes(setup.status)).map(setup => { const event = structure.find(item => item.id === setup.structure_event_id), c = event && candleById[event.confirmation_candle_id]; return c && { time: seconds(c.open_time), position: setup.direction === 'bullish' ? 'belowBar' : 'aboveBar', color: '#c084fc', shape: 'square', text: `ANALYSIS ${setup.direction === 'bullish' ? 'LONG' : 'SHORT'} #${setup.id} · ${setup.strategy} · ${setup.setup_timeframe} · ${setup.status}` } }),
       ].filter(Boolean)
       const step = candles.length > 1 ? seconds(candles[1].open_time) - seconds(candles[0].open_time) : 0
       const clustered = raw.sort((a,b) => a.time - b.time).reduce((groups, marker) => { const nearby = [...groups].reverse().find(item => item.position === marker.position && marker.time - item.time <= step); if (nearby) nearby.text += ` · ${marker.text}`; else groups.push({...marker}); return groups }, [])
@@ -93,10 +93,17 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
     })
     const visibleSetups = setups.filter(setup => settings.setups && ['ready','triggered'].includes(setup.status))
     visibleSetups.forEach(setup => {
-      if (settings.entryZones && setup.entry_min != null) addBand(setup.entry_max, setup.entry_min, 'setup-entry', `${setup.direction.toUpperCase()} ENTRY`)
-      if (settings.entryZones && setup.preferred_entry != null) candleSeries.createPriceLine({ price:+setup.preferred_entry,color:'#c084fc',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'ENTRY' })
-      if (settings.entryZones && setup.stop_loss != null) candleSeries.createPriceLine({ price:+setup.stop_loss,color:'#ef4444',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'SL' })
-      if (settings.targets) [setup.take_profit_1,setup.take_profit_2,setup.take_profit_3].forEach((target,index)=>target!=null&&candleSeries.createPriceLine({price:+target,color:'#22c55e',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:`TP${index+1}`}))
+      const prefix=`ANALYSIS #${setup.id}`
+      if (settings.entryZones && setup.entry_min != null) addBand(setup.entry_max, setup.entry_min, 'setup-entry', `${prefix} ${setup.direction === 'bullish' ? 'LONG' : 'SHORT'} ENTRY`)
+      if (settings.entryZones && setup.preferred_entry != null) candleSeries.createPriceLine({ price:+setup.preferred_entry,color:'#c084fc',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:`${prefix} ENTRY` })
+      if (settings.entryZones && setup.stop_loss != null) candleSeries.createPriceLine({ price:+setup.stop_loss,color:'#ef708f',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:`${prefix} SL` })
+      if (settings.targets) [setup.take_profit_1,setup.take_profit_2,setup.take_profit_3].forEach((target,index)=>target!=null&&candleSeries.createPriceLine({price:+target,color:'#86efac',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:`${prefix} TP${index+1}`}))
+    })
+    activePositions.forEach(position => {
+      const prefix=`ACTIVE ${position.direction === 'bullish' ? 'LONG' : 'SHORT'} #${position.setup_id}`
+      candleSeries.createPriceLine({price:+position.entry,color:'#38bdf8',lineWidth:3,lineStyle:0,axisLabelVisible:true,title:`${prefix} · ACTIVE ENTRY`})
+      if(position.stop_loss!=null)candleSeries.createPriceLine({price:+position.stop_loss,color:'#dc2626',lineWidth:3,lineStyle:0,axisLabelVisible:true,title:`${prefix} · ACTIVE SL`})
+      ;[position.take_profit_1,position.take_profit_2,position.take_profit_3].forEach((target,index)=>target!=null&&candleSeries.createPriceLine({price:+target,color:'#16a34a',lineWidth:2,lineStyle:1,axisLabelVisible:true,title:`${prefix} · ACTIVE TP${index+1}`}))
     })
     const added = Math.max(0, candles.length - previousLength.current)
     if (visibleRange.current && previousLength.current) {
@@ -110,7 +117,7 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
     previousLength.current = candles.length
     requestAnimationFrame(updateBands)
     return () => { candleSeriesRef.current = null; bands.forEach(band => band.element.remove()); chart.remove() }
-  }, [hasCandles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, waveCounts, indicators, settings, onLoadOlder])
+  }, [hasCandles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, activePositions, waveCounts, indicators, settings, onLoadOlder])
   useEffect(() => {
     const series = candleSeriesRef.current
     if (!series || !candles.length) return

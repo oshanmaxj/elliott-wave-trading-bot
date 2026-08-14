@@ -15,7 +15,7 @@ export const saveBinanceCredentials = payload => api.post('/binance/credentials'
 export const getMarketBundle = async (symbol, timeframe) => {
   const params = { symbol, timeframe }
   const safe = promise => promise.catch(error => error.response?.status === 404 ? { data: null } : Promise.reject(error))
-  const [candles, swings, structure, fvg, analysis, liquidity, orderBlocks, premiumDiscount, bias, score, sweeps, setups, waveCounts, waveContext] = await Promise.all([
+  const [candles, swings, structure, fvg, analysis, liquidity, orderBlocks, premiumDiscount, bias, score, sweeps, setups, waveCounts, waveContext, activePositions] = await Promise.all([
     api.get('/candles', { params: { ...params, limit: 1000 } }),
     api.get('/swings', { params }), api.get('/structure', { params }), api.get('/fvg', { params }),
     safe(api.get('/analysis/latest', { params })),
@@ -24,6 +24,7 @@ export const getMarketBundle = async (symbol, timeframe) => {
     safe(api.get('/structure-score', { params })),
     api.get('/liquidity-sweeps', { params }), api.get('/trade-setups', { params }),
     api.get('/elliott-wave/counts', { params: { ...params, limit: 20 } }), api.get('/elliott-wave/context', { params: { symbol } }),
+    api.get('/execution/position-overlays', { params: { symbol } }),
   ])
-  return { candles: candles.data, swings: swings.data, structure: structure.data, fvg: fvg.data, analysis: analysis.data, liquidity: liquidity.data, orderBlocks: orderBlocks.data, premiumDiscount: premiumDiscount.data, bias: bias.data, score: score.data, sweeps: sweeps.data, setups: setups.data.filter(x => x.setup_timeframe === timeframe), waveCounts: waveCounts.data, waveContext: waveContext.data }
+  return { candles: candles.data, swings: swings.data, structure: structure.data, fvg: fvg.data, analysis: analysis.data, liquidity: liquidity.data, orderBlocks: orderBlocks.data, premiumDiscount: premiumDiscount.data, bias: bias.data, score: score.data, sweeps: sweeps.data, setups: setups.data.filter(x => x.setup_timeframe === timeframe), waveCounts: waveCounts.data, waveContext: waveContext.data, activePositions: activePositions.data }
 }

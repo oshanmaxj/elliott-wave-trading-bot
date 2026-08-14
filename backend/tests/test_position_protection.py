@@ -62,7 +62,9 @@ class ProtectionClient:
         pass
 
 
-def seed(session_factory, *, stop=Decimal("950"), tp1=Decimal("1100")):
+def seed(
+    session_factory, *, stop=Decimal("950"), tp1=Decimal("1100"), direction="long"
+):
     now = datetime.now(timezone.utc)
     with session_factory.begin() as db:
         symbol = Symbol(
@@ -76,7 +78,7 @@ def seed(session_factory, *, stop=Decimal("950"), tp1=Decimal("1100")):
         db.flush()
         setup = TradeSetup(
             symbol_id=symbol.id,
-            direction="bullish",
+            direction="bullish" if direction == "long" else "bearish",
             strategy="bullish_continuation",
             status="executed",
             higher_timeframe="5m",
@@ -104,7 +106,7 @@ def seed(session_factory, *, stop=Decimal("950"), tp1=Decimal("1100")):
             environment="testnet",
             symbol_id=symbol.id,
             originating_trade_setup_id=setup.id,
-            direction="long",
+            direction=direction,
             status="open",
             base_quantity=Decimal("0.015779"),
             remaining_quantity=Decimal("0.015779"),
@@ -157,9 +159,12 @@ async def test_filled_position_retains_setup_geometry_and_gets_exchange_oco(
         position = db.get(LivePosition, position_id)
         protection = db.scalar(select(ProtectiveOrder))
         assert position.protection_status == "protected"
-        assert (position.stop_loss, position.take_profit_1, position.take_profit_2, position.take_profit_3) == (
-            Decimal("950"), Decimal("1100"), Decimal("1150"), Decimal("1200")
-        )
+        assert (
+            position.stop_loss,
+            position.take_profit_1,
+            position.take_profit_2,
+            position.take_profit_3,
+        ) == (Decimal("950"), Decimal("1100"), Decimal("1150"), Decimal("1200"))
         assert protection.order_list_id == "901"
         assert protection.stop_exchange_order_id == "903"
         assert protection.take_profit_exchange_order_id == "902"
@@ -175,7 +180,11 @@ async def test_missing_target_fails_critically_without_submission(
     assert ProtectionClient.submitted is None
     with session_factory() as db:
         position = db.get(LivePosition, position_id)
-        event = db.scalar(select(ExecutionEvent).where(ExecutionEvent.event_type == "protection_failed"))
+        event = db.scalar(
+            select(ExecutionEvent).where(
+                ExecutionEvent.event_type == "protection_failed"
+            )
+        )
         assert position.protection_status == "unprotected"
         assert event.severity == "CRITICAL"
 
@@ -196,3 +205,61 @@ async def test_non_executing_oco_is_not_reported_as_protected(
     with session_factory() as db:
         assert db.get(LivePosition, position_id).protection_status == "unprotected"
         assert db.scalar(select(ProtectiveOrder)).status == "protection_failed"
+
+
+@pytest.mark.asyncio
+async def test_short_position_uses_inverse_acknowledged_oco_geometry(
+    session_factory, monkeypatch
+):
+    position_id = seed(
+        session_factory, stop=Decimal("1050"), tp1=Decimal("900"), direction="short"
+    )
+    result = await service(session_factory, monkeypatch).establish(position_id)
+    assert result["protected"], result
+    assert ProtectionClient.submitted["side"] == "BUY"
+    assert ProtectionClient.submitted["aboveType"] == "STOP_LOSS"
+    assert ProtectionClient.submitted["aboveStopPrice"] == "1050"
+    assert ProtectionClient.submitted["belowType"] == "LIMIT_MAKER"
+    assert ProtectionClient.submitted["belowPrice"] == "900"
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_without_leg_ids_remains_unprotected(
+    session_factory, monkeypatch
+):
+    position_id = seed(session_factory)
+    protection_service = service(session_factory, monkeypatch)
+    ProtectionClient.response = {
+        "orderListId": 901,
+        "listOrderStatus": "EXECUTING",
+        "orders": [
+            {"clientOrderId": f"ws-test-{position_id}-tp1"},
+            {"clientOrderId": f"ws-test-{position_id}-sl"},
+        ],
+    }
+    result = await protection_service.establish(position_id)
+    assert not result["protected"]
+    with session_factory() as db:
+        assert db.get(LivePosition, position_id).protection_status == "unprotected"
+
+
+@pytest.mark.asyncio
+async def test_rejection_event_contains_safe_incident_context(
+    session_factory, monkeypatch
+):
+    position_id = seed(session_factory)
+    protection_service = service(session_factory, monkeypatch)
+    ProtectionClient.rejection = RuntimeError("testnet rejected protection")
+    result = await protection_service.establish(position_id)
+    assert not result["protected"]
+    with session_factory() as db:
+        event = db.scalar(
+            select(ExecutionEvent).where(
+                ExecutionEvent.event_type == "protection_failed"
+            )
+        )
+        assert event.severity == "CRITICAL"
+        assert event.metadata_json["setup_id"]
+        assert event.metadata_json["position_id"] == position_id
+        assert event.metadata_json["binance_error"] == "testnet rejected protection"
+        assert event.metadata_json["attempted_parameters"]["symbol"] == "BTCUSDT"
