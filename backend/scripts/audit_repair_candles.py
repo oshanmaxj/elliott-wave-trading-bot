@@ -20,7 +20,8 @@ def utc(value: str) -> datetime:
 async def run(args):
     start, end = utc(args.start), utc(args.end)
     client = BinanceRESTClient(args.base_url)
-    authoritative = await client.fetch_paginated(args.symbol, args.timeframe, start, end)
+    fetched = await client.fetch_paginated(args.symbol, args.timeframe, start, end)
+    authoritative = [row for row in fetched if row.is_closed]
     source = {row.open_time: row for row in authoritative}
     changed = []
     with SessionLocal.begin() as db:
@@ -49,6 +50,7 @@ async def run(args):
             db.rollback()
     print({"symbol": args.symbol, "timeframe": args.timeframe,
            "source_base_url": client.base_url, "authoritative_rows": len(source),
+           "unclosed_rows_ignored": len(fetched) - len(authoritative),
            "mismatches": changed, "applied": bool(args.apply)})
 
 
@@ -58,6 +60,6 @@ if __name__ == "__main__":
     parser.add_argument("--timeframe", required=True, choices=["1m", "5m", "15m", "1h", "4h"])
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
-    parser.add_argument("--base-url", default="https://api.binance.com")
+    parser.add_argument("--base-url", default=None, help="Override configured Spot REST origin")
     parser.add_argument("--apply", action="store_true", help="Apply exact Binance values; default is audit only")
     asyncio.run(run(parser.parse_args()))

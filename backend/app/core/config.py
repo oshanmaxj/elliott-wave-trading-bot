@@ -6,6 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.constants import SUPPORTED_TIMEFRAMES, TIMEFRAMES
+from app.market_data.source import spot_market_source
 
 
 class Settings(BaseSettings):
@@ -79,6 +80,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_execution_safety(self):
+        spot_market_source(self.binance_rest_base_url, self.binance_ws_base_url)
         placeholders = {"changeme", "your_api_key", "your_api_secret", "placeholder", "test"}
         if self.binance_execution_enabled and (
             not self.binance_api_key or not self.binance_api_secret

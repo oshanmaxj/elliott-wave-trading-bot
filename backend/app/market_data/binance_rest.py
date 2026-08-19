@@ -6,6 +6,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.constants import BINANCE_INTERVALS, TIMEFRAME_MS
+from app.market_data.source import reject_futures_market_data_url
 from app.schemas.common import CandleData
 
 
@@ -28,6 +29,7 @@ def from_ms(value: int) -> datetime:
 class BinanceRESTClient:
     def __init__(self, base_url: str | None = None, max_retries: int = 5):
         self.base_url = (base_url or get_settings().binance_rest_base_url).rstrip("/")
+        reject_futures_market_data_url(self.base_url)
         self.max_retries = max_retries
 
     @staticmethod

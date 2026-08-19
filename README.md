@@ -49,8 +49,8 @@ Stop services with `docker compose down`. To also remove persisted development d
 |---|---|---|
 | `DATABASE_URL` | SQLAlchemy PostgreSQL connection | `postgresql+psycopg://elliott:elliott@postgres:5432/elliott_wave` |
 | `REDIS_URL` | Redis connection for infrastructure expansion | `redis://redis:6379/0` |
-| `BINANCE_REST_BASE_URL` | Public futures REST origin | `https://fapi.binance.com` |
-| `BINANCE_WS_BASE_URL` | Public combined stream origin | `wss://fstream.binance.com/stream` |
+| `BINANCE_REST_BASE_URL` | Public Spot REST market-data origin | `https://api.binance.com` |
+| `BINANCE_WS_BASE_URL` | Public Spot combined-stream origin | `wss://stream.binance.com:9443/stream` |
 | `DEFAULT_SYMBOLS` | Allowed enabled symbols | `BTCUSDT,ETHUSDT` |
 | `DEFAULT_TIMEFRAMES` | Public market-data intervals | `1m,5m,15m,1h,4h` |
 | `HISTORICAL_CANDLE_LIMIT` | Initial candle target per stream | `500` |
