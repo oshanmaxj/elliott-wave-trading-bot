@@ -143,3 +143,64 @@ def test_historical_migrations_do_not_import_application_models():
         source = (VERSIONS / revision).read_text(encoding="utf-8")
         assert "from app" not in source
         assert "import app" not in source
+
+
+def test_fresh_upgrade_to_head_has_live_position_reconciliation_fields(
+    monkeypatch, tmp_path
+):
+    config = alembic_config(monkeypatch, tmp_path / "fresh-head.db")
+    engine = create_engine(config.get_main_option("sqlalchemy.url"))
+
+    command.upgrade(config, "head")
+
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("live_positions")
+    }
+    assert {
+        "last_reconciled_at",
+        "exit_reason",
+        "exit_price",
+    } <= columns.keys()
+    assert columns["exit_price"]["type"].precision == 30
+    assert columns["exit_price"]["type"].scale == 12
+
+    engine.dispose()
+
+
+def test_upgrade_from_deployed_0012_shape_adds_missing_exit_fields(
+    monkeypatch, tmp_path
+):
+    config = alembic_config(monkeypatch, tmp_path / "deployed-0012.db")
+    engine = create_engine(config.get_main_option("sqlalchemy.url"))
+    command.upgrade(config, "0011")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE live_positions "
+                "ADD COLUMN last_reconciled_at DATETIME NULL"
+            )
+        )
+    command.stamp(config, "0012")
+
+    assert "last_reconciled_at" in column_names(engine, "live_positions")
+    assert "exit_reason" not in column_names(engine, "live_positions")
+    assert "exit_price" not in column_names(engine, "live_positions")
+
+    command.upgrade(config, "0013")
+
+    columns = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("live_positions")
+    }
+    assert {"last_reconciled_at", "exit_reason", "exit_price"} <= columns.keys()
+    assert columns["exit_price"]["type"].precision == 30
+    assert columns["exit_price"]["type"].scale == 12
+
+    command.downgrade(config, "0012")
+    remaining = column_names(engine, "live_positions")
+    assert "last_reconciled_at" in remaining
+    assert "exit_reason" not in remaining
+    assert "exit_price" not in remaining
+    engine.dispose()

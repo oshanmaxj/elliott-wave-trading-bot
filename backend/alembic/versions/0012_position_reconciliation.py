@@ -19,7 +19,10 @@ def upgrade():
         sa.Column("last_reconciled_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.add_column("live_positions", sa.Column("exit_reason", sa.String(32), nullable=True))
-    op.add_column("live_positions", sa.Column("exit_price", P, nullable=True))
+    op.add_column(
+        "live_positions",
+        sa.Column("exit_price", sa.Numeric(30, 12), nullable=True),
+    )
 
 
 def downgrade():
