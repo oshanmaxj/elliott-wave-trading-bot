@@ -334,11 +334,15 @@ def order(row_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/positions")
-def positions(db: Session = Depends(get_db)):
-    return [
-        serialize(x)
-        for x in db.scalars(select(LivePosition).order_by(LivePosition.id.desc()))
-    ]
+async def positions(db: Session = Depends(get_db)):
+    from app.execution.reconciliation import position_mark, position_reconciliation
+
+    rows = list(db.scalars(select(LivePosition).order_by(LivePosition.id.desc())))
+    try:
+        marks = await position_reconciliation.marks()
+    except Exception:
+        marks = {}
+    return [{**serialize(row), **marks.get(row.id, position_mark(row, None))} for row in rows]
 
 
 @router.get("/position-overlays")
@@ -541,7 +545,11 @@ async def reconcile(db: Session = Depends(get_db)):
                 if exc.code != -2013:
                     raise
         db.commit()
-        return {"reconciled": count, "checked": len(rows)}
+        from app.execution.reconciliation import position_reconciliation
+
+        position_summary = await position_reconciliation.reconcile_all()
+        return {"orders": {"reconciled": count, "checked": len(rows)},
+                "positions": position_summary}
     finally:
         await client.close()
 

@@ -14,7 +14,7 @@ from app.database.session import get_db
 from app.execution.service import ExecutionRiskEngine, setup_fingerprint
 from app.market_data.binance_rest import BinanceRESTClient
 from app.market_data.binance_ws import BinanceWebSocketManager
-from app.models import BotLog, BotRuntimeState, ExecutionOrder
+from app.models import BotLog, BotRuntimeState, ExecutionOrder, FVGZone, MarketStructureEvent, OrderBlock, SwingPoint, TradeSetup
 from app.repositories.market import ensure_symbol, upsert_candle
 from app.schemas.common import CandleData, RuntimeSettings
 from app.services.historical_backfill import HistoricalBackfillService, historical_backfill
@@ -86,7 +86,7 @@ def test_strategy_diagnostics_aggregates_pipeline_events(session_factory):
     with session_factory.begin() as db:
         for event_type, context in (
             ("closed_candle_processed", {}),
-            ("strategy_evaluation", {}),
+            ("strategy_evaluation", {"no_candidate_reasons": ["no_structure_break", "no_fvg"]}),
             ("candidate_generated", {}),
             ("candidate_rejected", {"reason": "invalid_stop_side"}),
             ("setup_persisted", {}),
@@ -99,6 +99,7 @@ def test_strategy_diagnostics_aggregates_pipeline_events(session_factory):
     assert result["candidates_generated"] == 1
     assert result["setups_persisted"] == 1
     assert result["rejection_reasons"] == {"invalid_stop_side": 1}
+    assert result["no_candidate_reasons"] == {"no_structure_break": 1, "no_fvg": 1}
     assert result["analysis_activity"]["swing_points_created"] == 0
 
 
@@ -114,6 +115,45 @@ async def test_insufficient_history_is_observable(session_factory):
         evaluation = db.query(BotLog).filter_by(event_type="strategy_evaluation").one()
         assert "insufficient_candles" in evaluation.context_json["no_candidate_reasons"]
         assert "no_confirmed_swing" in evaluation.context_json["no_candidate_reasons"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symbol_name", ["BTCUSDT", "ETHUSDT"])
+@pytest.mark.parametrize("timeframe", TIMEFRAMES)
+async def test_fresh_closed_candles_can_persist_every_analysis_stage(
+    session_factory, symbol_name, timeframe
+):
+    prices = [
+        (101, 99, 100, 100), (102, 99, 100, 101), (103, 99, 101, 102),
+        (106, 100, 102, 104), (108, 102, 104, 106), (110, 103, 106, 108),
+        (109, 102, 108, 105), (108, 100, 105, 103), (106, 97, 103, 100),
+        (104, 94, 100, 97), (102, 90, 97, 93), (104, 92, 93, 96),
+        (106, 94, 96, 100), (108, 97, 100, 104), (110, 100, 104, 108),
+        (112, 103, 108, 110), (111, 104, 110, 107), (109, 101, 107, 104),
+        (108, 99, 104, 102), (107, 98, 102, 100), (106, 97, 100, 99),
+        (114, 107, 108, 113), (116, 112, 113, 115),
+    ]
+    opened = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    step = timedelta(milliseconds=TIMEFRAME_MS[timeframe])
+    candle_ids = []
+    with session_factory.begin() as db:
+        symbol = ensure_symbol(db, symbol_name)
+        for index, (high, low, open_price, close) in enumerate(prices):
+            data = candle(opened + index * step, timeframe)
+            data.open = Decimal(open_price)
+            data.high = Decimal(high)
+            data.low = Decimal(low)
+            data.close = Decimal(close)
+            row, _ = upsert_candle(db, symbol.id, timeframe, data)
+            candle_ids.append(row.id)
+    for candle_id in candle_ids:
+        await process_closed_candle(candle_id, broadcast=False, session_factory=session_factory)
+    with session_factory() as db:
+        assert db.query(SwingPoint).count() >= 2
+        assert db.query(MarketStructureEvent).count() >= 1
+        assert db.query(FVGZone).count() >= 1
+        assert db.query(OrderBlock).count() >= 1
+        assert db.query(TradeSetup).count() >= 1
 
 
 @pytest.mark.asyncio

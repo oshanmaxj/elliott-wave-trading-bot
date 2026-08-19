@@ -730,6 +730,9 @@ class LivePosition(Base, TimestampMixin):
     closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ProtectiveOrder(Base, TimestampMixin):

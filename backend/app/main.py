@@ -21,6 +21,7 @@ from app.repositories.market import ensure_symbol
 from app.models import BacktestRun
 from app.services.historical_backfill import historical_backfill
 from app.services.binance_user_stream import user_stream
+from app.execution.reconciliation import position_reconciliation
 
 config = get_settings()
 configure_logging(config.log_level)
@@ -49,6 +50,11 @@ async def lifespan(app: FastAPI):
         if config.enable_market_stream:
             tasks.append(asyncio.create_task(market_stream.run(), name="market-stream"))
         await user_stream.start()
+        if config.binance_environment == "testnet" and config.binance_execution_enabled:
+            tasks.append(asyncio.create_task(
+                position_reconciliation.run_periodically(),
+                name="position-reconciliation",
+            ))
         app.state.background_tasks = tasks
         yield
     finally:

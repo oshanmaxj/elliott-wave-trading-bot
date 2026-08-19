@@ -247,12 +247,16 @@ def strategy_diagnostics(
         "higher-timeframe counter-trend setup disabled": "htf_countertrend",
     }
     rejection_reasons = {}
+    no_candidate_reasons = {}
     for row in logs:
-        if row.event_type != "candidate_rejected":
-            continue
-        raw = str((row.context_json or {}).get("reason", "unspecified"))
-        reason = aliases.get(raw, raw.replace(" ", "_"))
-        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        context = row.context_json or {}
+        if row.event_type == "candidate_rejected":
+            raw = str(context.get("reason", "unspecified"))
+            reason = aliases.get(raw, raw.replace(" ", "_"))
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        if row.event_type == "strategy_evaluation":
+            for reason in context.get("no_candidate_reasons", []):
+                no_candidate_reasons[reason] = no_candidate_reasons.get(reason, 0) + 1
     orders = list(db.scalars(select(ExecutionOrder).where(ExecutionOrder.submitted_at >= since)))
     execution_event_counts = {
         event_type: db.scalar(select(func.count(ExecutionEvent.id)).where(ExecutionEvent.created_at >= since, ExecutionEvent.event_type == event_type)) or 0
@@ -276,6 +280,7 @@ def strategy_diagnostics(
             latest_by_market.append({
             "symbol": symbol,
             "timeframe": timeframe,
+            "swing_points_created": db.scalar(select(func.count(SwingPoint.id)).join(Symbol, SwingPoint.symbol_id == Symbol.id).where(Symbol.symbol == symbol, SwingPoint.timeframe == timeframe, SwingPoint.detected_at >= since)) or 0,
             "latest_swing_point_at": db.scalar(select(func.max(SwingPoint.detected_at)).join(Symbol, SwingPoint.symbol_id == Symbol.id).where(Symbol.symbol == symbol, SwingPoint.timeframe == timeframe)),
             "latest_structure_event_at": db.scalar(select(func.max(MarketStructureEvent.detected_at)).join(Symbol, MarketStructureEvent.symbol_id == Symbol.id).where(Symbol.symbol == symbol, MarketStructureEvent.timeframe == timeframe)),
             "latest_fvg_at": db.scalar(select(func.max(FVGZone.detected_at)).join(Symbol, FVGZone.symbol_id == Symbol.id).where(Symbol.symbol == symbol, FVGZone.timeframe == timeframe)),
@@ -295,6 +300,7 @@ def strategy_diagnostics(
         "orders_created": execution_event_counts["execution_order_created"],
         "orders_rejected_failed": execution_event_counts["exchange_submission_rejected"] + execution_event_counts["execution_failed"],
         "rejection_reasons": rejection_reasons,
+        "no_candidate_reasons": no_candidate_reasons,
         "analysis_activity": analysis_activity,
         "latest_analysis_by_market": latest_by_market,
     }
