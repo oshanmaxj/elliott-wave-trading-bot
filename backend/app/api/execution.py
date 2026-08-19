@@ -358,17 +358,13 @@ def position_summary(db: Session = Depends(get_db)):
 
 @router.get("/position-overlays")
 def position_overlays(symbol: str, db: Session = Depends(get_db)):
-    from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
+    from app.execution.reconciliation import active_positions_query
     symbol_row = db.scalar(select(Symbol).where(Symbol.symbol == symbol.upper()))
     if not symbol_row:
         return []
     rows = list(
         db.scalars(
-            select(LivePosition)
-            .where(
-                LivePosition.symbol_id == symbol_row.id,
-                LivePosition.status.in_(ACTIVE_POSITION_STATUSES),
-            )
+            active_positions_query().where(LivePosition.symbol_id == symbol_row.id)
             .order_by(LivePosition.opened_at)
         )
     )
@@ -386,17 +382,20 @@ def position_overlays(symbol: str, db: Session = Depends(get_db)):
             {
                 "position_id": position.id,
                 "setup_id": setup.id,
-                "direction": setup.direction,
+                "direction": "bullish" if position.direction == "long" else "bearish",
                 "strategy": setup.strategy,
                 "timeframe": setup.setup_timeframe,
                 "setup_status": setup.status,
                 "position_status": position.status,
                 "protection_status": position.protection_status,
                 "entry": position.average_entry,
-                "stop_loss": setup.stop_loss,
-                "take_profit_1": setup.take_profit_1,
-                "take_profit_2": setup.take_profit_2,
-                "take_profit_3": setup.take_profit_3,
+                "stop_loss": position.stop_loss,
+                "take_profit_1": position.take_profit_1,
+                "take_profit_2": position.take_profit_2,
+                "take_profit_3": position.take_profit_3,
+                "source_table": "live_positions",
+                "source_record_id": position.id,
+                "canonical_active": True,
                 "order_list_id": protection.order_list_id if protection else None,
             }
         )

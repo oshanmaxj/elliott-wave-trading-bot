@@ -12,6 +12,7 @@ export const applyCsrf = (config, source) => {
 api.interceptors.request.use(config => applyCsrf(config))
 api.interceptors.response.use(x=>x,async error=>{const cfg=error.config||{};if(cfg.method==='get'&&(!error.response||error.response.status>=500)&&(cfg.__retries||0)<2){cfg.__retries=(cfg.__retries||0)+1;await new Promise(r=>setTimeout(r,250*2**cfg.__retries));return api(cfg)}return Promise.reject(error)})
 export const saveBinanceCredentials = payload => api.post('/binance/credentials', payload, { timeout: 15000 })
+export const uniqueById = rows => [...new Map((rows || []).map(row => [row.id ?? `${row.source_table}:${row.source_record_id}`, row])).values()]
 export const getMarketBundle = async (symbol, timeframe) => {
   const params = { symbol, timeframe }
   const safe = promise => promise.catch(error => error.response?.status === 404 ? { data: null } : Promise.reject(error))
@@ -26,5 +27,5 @@ export const getMarketBundle = async (symbol, timeframe) => {
     api.get('/elliott-wave/counts', { params: { ...params, limit: 20 } }), api.get('/elliott-wave/context', { params: { symbol } }),
     api.get('/execution/position-overlays', { params: { symbol } }),
   ])
-  return { candles: candles.data, swings: swings.data, structure: structure.data, fvg: fvg.data, analysis: analysis.data, liquidity: liquidity.data, orderBlocks: orderBlocks.data, premiumDiscount: premiumDiscount.data, bias: bias.data, score: score.data, sweeps: sweeps.data, setups: setups.data.filter(x => x.setup_timeframe === timeframe), waveCounts: waveCounts.data, waveContext: waveContext.data, activePositions: activePositions.data }
+  return { candles: uniqueById(candles.data), swings: uniqueById(swings.data), structure: uniqueById(structure.data), fvg: uniqueById(fvg.data), analysis: analysis.data, liquidity: uniqueById(liquidity.data), orderBlocks: uniqueById(orderBlocks.data), premiumDiscount: premiumDiscount.data, bias: bias.data, score: score.data, sweeps: uniqueById(sweeps.data), setups: uniqueById(setups.data.filter(x => x.setup_timeframe === timeframe)), waveCounts: uniqueById(waveCounts.data), waveContext: waveContext.data, activePositions: uniqueById(activePositions.data) }
 }

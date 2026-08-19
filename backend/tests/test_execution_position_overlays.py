@@ -119,3 +119,26 @@ def test_active_overlays_use_originating_setups_not_latest_analysis(session_fact
     assert rows[0]["stop_loss"] == Decimal("95")
     assert rows[0]["protection_status"] == "unprotected"
     assert len(rows) == 2
+
+
+def test_closed_positions_are_absent_and_live_position_geometry_is_canonical(session_factory):
+    now = datetime.now(timezone.utc)
+    with session_factory.begin() as db:
+        symbol = Symbol(exchange="binance", symbol="BTCUSDT", base_asset="BTC",
+            quote_asset="USDT", market_type="spot")
+        db.add(symbol)
+        db.flush()
+        setup = add_setup(db, symbol, 10, direction="bullish", timeframe="1h",
+            entry=Decimal("100"), stop=Decimal("1"), target=Decimal("999"))
+        common = dict(environment="testnet", symbol_id=symbol.id,
+            originating_trade_setup_id=setup.id, direction="long", base_quantity=Decimal("1"),
+            remaining_quantity=Decimal("1"), average_entry=Decimal("101"), stop_loss=Decimal("95"),
+            take_profit_1=Decimal("110"), protection_status="protected", opened_at=now)
+        db.add_all([LivePosition(**common, status="open"),
+                    LivePosition(**common, status="closed", closed_at=now)])
+    with session_factory() as db:
+        rows = position_overlays("BTCUSDT", db)
+    assert len(rows) == 1
+    assert rows[0]["canonical_active"] is True
+    assert rows[0]["stop_loss"] == Decimal("95")
+    assert rows[0]["take_profit_1"] == Decimal("110")

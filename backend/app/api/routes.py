@@ -77,6 +77,7 @@ from app.smc.engine import multi_timeframe_bias, premium_discount, structure_sco
 from app.trading.backtest import CandleCoverageError, run_backtest
 from app.services.historical_backfill import aligned_range, historical_backfill, latest_closed_time
 from app.market_data.binance_rest import BinanceRESTClient
+from app.services.overlay_diagnostics import overlay_diagnostics
 from app.trading.execution import execution_fee, position_size, slipped_price
 from app.trading.metrics import calculate_metrics
 from app.trading.paper import manual_close
@@ -162,6 +163,17 @@ async def candles(
 @router.get("/market-data/coverage")
 def market_data_coverage():
     return historical_backfill.coverage()
+
+
+@router.get("/market-data/overlays/debug")
+def market_data_overlay_debug(
+    symbol: str, timeframe: str, stale_only: bool = False,
+    db: Session = Depends(get_db),
+):
+    resolve_symbol(db, symbol)
+    validate_timeframe(timeframe)
+    rows = overlay_diagnostics(db, symbol, timeframe)
+    return [row for row in rows if row["stale"]] if stale_only else rows
 
 
 @router.post("/market-data/backfill")

@@ -131,7 +131,10 @@ def log_setup_decision(
 
 
 async def process_closed_candle(
-    candle_id: int, broadcast: bool = True, session_factory=None
+    candle_id: int,
+    broadcast: bool = True,
+    session_factory=None,
+    allow_trading_side_effects: bool = True,
 ) -> dict:
     events: list[tuple[str, dict]] = []
     automatic_setup_ids: list[int] = []
@@ -754,7 +757,7 @@ async def process_closed_candle(
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
                     stage_counts["trade_setups_created"] += 1
-                    route_automatically = automatic_routing_enabled(runtime)
+                    route_automatically = allow_trading_side_effects and automatic_routing_enabled(runtime)
                     log_setup_decision(
                         db,
                         setup,
@@ -935,7 +938,7 @@ async def process_closed_candle(
                     db.flush()
                     events.append(("trade_setup_created", serialize(setup)))
                     stage_counts["trade_setups_created"] += 1
-                    route_automatically = automatic_routing_enabled(runtime)
+                    route_automatically = allow_trading_side_effects and automatic_routing_enabled(runtime)
                     log_setup_decision(
                         db,
                         setup,
@@ -976,7 +979,7 @@ async def process_closed_candle(
             if next_status == "triggered":
                 setup.triggered_at = candle.close_time
                 db.add(BotLog(level="INFO", service="analysis", event_type="setup_triggered", message=f"Setup {setup.id} triggered", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy}))
-                if automatic_routing_enabled(runtime):
+                if allow_trading_side_effects and automatic_routing_enabled(runtime):
                     db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Triggered setup is eligible for execution routing", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy, "source": "lifecycle_trigger"}))
                     automatic_setup_ids.append(setup.id)
             if next_status == "invalidated":
@@ -993,8 +996,9 @@ async def process_closed_candle(
                 setup.id,
                 candle.close_time,
             )
-        for paper_position in process_paper_candle(db, candle):
-            events.append(("paper_position_updated", serialize(paper_position)))
+        if allow_trading_side_effects:
+            for paper_position in process_paper_candle(db, candle):
+                events.append(("paper_position_updated", serialize(paper_position)))
         trend = classify_trend(swings)
         latest_event = db.scalar(
             select(MarketStructureEvent)
