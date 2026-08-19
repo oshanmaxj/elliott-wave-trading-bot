@@ -554,6 +554,7 @@ class BinanceUserStreamService:
                 position.protection_status = "closed"
                 position.closed_at = now
                 position.exit_reason = "take_profit" if leg == "take_profit_1" else "stop_loss"
+                position.exit_price = event["last_price"]
             else:
                 position.status = "partially_closed"
                 position.protection_status = "partially_protected"

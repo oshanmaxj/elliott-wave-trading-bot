@@ -345,8 +345,20 @@ async def positions(db: Session = Depends(get_db)):
     return [{**serialize(row), **marks.get(row.id, position_mark(row, None))} for row in rows]
 
 
+@router.get("/positions/summary")
+def position_summary(db: Session = Depends(get_db)):
+    from app.execution.reconciliation import active_positions_query
+
+    rows = list(db.scalars(active_positions_query()))
+    return {"active_count": len(rows),
+            "protected_count": sum(row.protection_status == "protected" for row in rows),
+            "unprotected_count": sum(row.protection_status != "protected" for row in rows),
+            "position_ids": [row.id for row in rows]}
+
+
 @router.get("/position-overlays")
 def position_overlays(symbol: str, db: Session = Depends(get_db)):
+    from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
     symbol_row = db.scalar(select(Symbol).where(Symbol.symbol == symbol.upper()))
     if not symbol_row:
         return []
@@ -355,7 +367,7 @@ def position_overlays(symbol: str, db: Session = Depends(get_db)):
             select(LivePosition)
             .where(
                 LivePosition.symbol_id == symbol_row.id,
-                LivePosition.status.in_(["open", "partially_closed"]),
+                LivePosition.status.in_(ACTIVE_POSITION_STATUSES),
             )
             .order_by(LivePosition.opened_at)
         )

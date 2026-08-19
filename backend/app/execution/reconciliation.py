@@ -11,6 +11,12 @@ from app.execution.binance import BinanceSpotClient
 from app.execution.credentials import load_stored_settings
 from app.models import ExecutionEvent, LivePosition, ProtectiveOrder, Symbol
 
+ACTIVE_POSITION_STATUSES = ("open", "partially_closed")
+
+
+def active_positions_query():
+    return select(LivePosition).where(LivePosition.status.in_(ACTIVE_POSITION_STATUSES))
+
 
 def position_mark(position, current_price: Decimal | None) -> dict:
     quantity = Decimal(position.remaining_quantity)
@@ -46,7 +52,7 @@ class PositionReconciliationService:
     async def marks(self) -> dict[int, dict]:
         with self.session_factory() as db:
             rows = [(p.id, db.get(Symbol, p.symbol_id).symbol, p) for p in db.scalars(
-                select(LivePosition).where(LivePosition.status.in_(["open", "partially_closed"]))) ]
+                active_positions_query())]
         if not rows:
             return {}
         client = self.client_factory(self._client_settings())
@@ -75,7 +81,7 @@ class PositionReconciliationService:
             with self.session_factory() as db:
                 position_ids = list(db.scalars(select(LivePosition.id).where(
                     LivePosition.environment == "testnet",
-                    LivePosition.status.in_(["open", "partially_closed"]))))
+                    LivePosition.status.in_(ACTIVE_POSITION_STATUSES))))
             for position_id in position_ids:
                 with self.session_factory() as db:
                     position = db.get(LivePosition, position_id)

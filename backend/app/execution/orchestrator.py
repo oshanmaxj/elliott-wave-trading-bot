@@ -15,6 +15,7 @@ from app.execution.service import (
     setup_fingerprint,
 )
 from app.execution.strategies import originating_runtime_strategy
+from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
 from app.execution.filters import quantity_limits, serialize_quantity
 from app.models import (
     BotRuntimeState,
@@ -116,7 +117,7 @@ class AutomaticTestnetExecutor:
             select(LivePosition.id)
             .where(
                 LivePosition.symbol_id == symbol.id,
-                LivePosition.status.in_(["open", "partially_closed"]),
+                LivePosition.status.in_(ACTIVE_POSITION_STATUSES),
                 LivePosition.protection_status != "protected",
             )
             .limit(1)

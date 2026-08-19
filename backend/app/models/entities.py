@@ -734,6 +734,7 @@ class LivePosition(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    exit_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
 
 
 class ProtectiveOrder(Base, TimestampMixin):

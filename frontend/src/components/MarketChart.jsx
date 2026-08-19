@@ -27,7 +27,7 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
     const candleById = Object.fromEntries(candles.map(c => [c.id, c]))
     candleSeries.setData(candles.map(toChartCandle))
     const colors = { ema20: '#ffcc66', ema50: '#a78bfa', ema200: '#4ea8de' }
-    Object.entries(colors).forEach(([key, color]) => {
+    !settings.raw && Object.entries(colors).forEach(([key, color]) => {
       const values = candles.map(c => c.indicators?.[key]).filter(Boolean)
       if (values.length) { const series = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }); series.setData(values) }
     })
@@ -100,7 +100,7 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
       if (settings.entryZones && setup.stop_loss != null) candleSeries.createPriceLine({ price:+setup.stop_loss,color:'#ef708f',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:`${prefix} SL` })
       if (settings.targets) [setup.take_profit_1,setup.take_profit_2,setup.take_profit_3].forEach((target,index)=>target!=null&&candleSeries.createPriceLine({price:+target,color:'#86efac',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:`${prefix} TP${index+1}`}))
     })
-    activePositions.forEach(position => {
+    !settings.raw && activePositions.forEach(position => {
       const prefix=`ACTIVE ${position.direction === 'bullish' ? 'LONG' : 'SHORT'} #${position.setup_id}`
       candleSeries.createPriceLine({price:+position.entry,color:'#38bdf8',lineWidth:3,lineStyle:0,axisLabelVisible:true,title:`${prefix} · ACTIVE ENTRY`})
       if(position.stop_loss!=null)candleSeries.createPriceLine({price:+position.stop_loss,color:'#dc2626',lineWidth:3,lineStyle:0,axisLabelVisible:true,title:`${prefix} · ACTIVE SL`})

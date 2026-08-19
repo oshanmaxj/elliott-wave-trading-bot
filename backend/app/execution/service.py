@@ -11,6 +11,7 @@ from app.execution.filters import (
 )
 from app.models import BotRuntimeState, ExecutionOrder, LivePosition
 from app.services.settings import get_runtime_settings
+from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
 from app.trading.validation import validate_setup
 
 
@@ -172,7 +173,7 @@ class ExecutionRiskEngine:
             db.scalar(
                 select(func.count())
                 .select_from(LivePosition)
-                .where(LivePosition.status.in_(["open", "partially_closed"]))
+                .where(LivePosition.status.in_(ACTIVE_POSITION_STATUSES))
             )
             >= self.s.max_open_positions
         ):

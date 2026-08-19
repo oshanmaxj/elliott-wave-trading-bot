@@ -106,13 +106,10 @@ def event(db, event_type, message, severity="INFO"):
 
 @router.get("/bot/status")
 def bot_status(db: Session = Depends(get_db)):
+    from app.execution.reconciliation import active_positions_query
     row = state(db)
     account = db.scalar(select(ExchangeAccount).order_by(ExchangeAccount.id.desc()))
-    active = db.scalar(
-        select(func.count())
-        .select_from(LivePosition)
-        .where(LivePosition.status.in_(["open", "partially_closed"]))
-    )
+    active = len(list(db.scalars(active_positions_query())))
     return {
         **clean(row),
         "active_trades": active,
@@ -482,11 +479,24 @@ async def binance_balances(
 
 @router.get("/bot/trade-history")
 def history(db: Session = Depends(get_db)):
-    return [
-        clean(x)
-        for x in db.scalars(
+    rows = list(db.scalars(
             select(LivePosition)
             .where(LivePosition.status == "closed")
             .order_by(LivePosition.closed_at.desc())
-        )
-    ]
+        ))
+    result = []
+    for position in rows:
+        symbol = db.get(Symbol, position.symbol_id)
+        setup = db.get(TradeSetup, position.originating_trade_setup_id)
+        cost = position.average_entry * position.base_quantity
+        result.append({**clean(position), "position_id": position.id,
+            "symbol": symbol.symbol if symbol else None,
+            "setup_id": position.originating_trade_setup_id,
+            "strategy": setup.strategy if setup else None,
+            "timeframe": setup.setup_timeframe if setup else None,
+            "entry_time": position.opened_at, "exit_time": position.closed_at,
+            "average_exit": position.exit_price,
+            "realized_pnl_pct": (position.realized_pnl / cost * 100) if cost else None,
+            "fees": position.total_fees,
+            "protection_outcome": position.protection_status})
+    return result
