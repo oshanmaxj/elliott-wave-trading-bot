@@ -86,6 +86,16 @@ def normalize_event(message):
             "delta": Decimal(raw.get("d", "0")),
             "raw": raw,
         }
+    if kind == "listStatus":
+        return {
+            "type": "order_list",
+            "event_time": utc_ms(raw.get("E")),
+            "symbol": raw.get("s"),
+            "order_list_id": str(raw.get("g")) if raw.get("g") is not None else None,
+            "list_status_type": raw.get("l"),
+            "list_order_status": raw.get("L"),
+            "raw": raw,
+        }
     if kind in {"eventStreamTerminated", "serverShutdown"}:
         return {"type": "terminated", "event_time": utc_ms(raw.get("E")), "raw": raw}
     return {"type": "ignored", "event_name": kind, "raw": raw}
@@ -281,6 +291,23 @@ class BinanceUserStreamService:
             return
         if event["type"] == "order":
             await self._process_order(event)
+            return
+        if event["type"] == "order_list":
+            await self._process_order_list(event)
+
+    async def _process_order_list(self, event):
+        with self.session_factory.begin() as db:
+            protection = db.scalar(select(ProtectiveOrder).where(
+                ProtectiveOrder.order_list_id == event["order_list_id"]))
+            if not protection:
+                return
+            position = db.get(LivePosition, protection.live_position_id)
+            protection.raw_status_json = event["raw"]
+            if event["list_order_status"] == "ALL_DONE":
+                protection.status = "closed" if position.status == "closed" else "protection_failed"
+                protection.closed_at = event["event_time"] or datetime.now(timezone.utc)
+                if position.status != "closed":
+                    position.protection_status = "unprotected"
 
     async def _process_balance(self, event):
         if event["type"] == "balance":
@@ -458,10 +485,10 @@ class BinanceUserStreamService:
                     base_quantity=owned,
                     remaining_quantity=owned,
                     average_entry=event["last_price"],
-                    stop_loss=setup.stop_loss if setup and setup.stop_loss is not None else Decimal("0"),
-                    take_profit_1=setup.take_profit_1 if setup else None,
-                    take_profit_2=setup.take_profit_2 if setup else None,
-                    take_profit_3=setup.take_profit_3 if setup else None,
+                    stop_loss=Decimal("0"),
+                    take_profit_1=None,
+                    take_profit_2=None,
+                    take_profit_3=None,
                     protection_status="protection_pending",
                     opened_at=now,
                 )
@@ -526,6 +553,7 @@ class BinanceUserStreamService:
                 position.status = "closed"
                 position.protection_status = "closed"
                 position.closed_at = now
+                position.exit_reason = "take_profit" if leg == "take_profit_1" else "stop_loss"
             else:
                 position.status = "partially_closed"
                 position.protection_status = "partially_protected"

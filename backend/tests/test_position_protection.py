@@ -18,6 +18,7 @@ class ProtectionClient:
     response = None
     rejection = None
     submitted = None
+    available = Decimal("0.015779")
 
     def __init__(self, settings):
         pass
@@ -44,6 +45,9 @@ class ProtectionClient:
                 }
             ]
         }
+
+    async def account(self):
+        return {"balances": [{"asset": "BTC", "free": str(self.available), "locked": "0"}]}
 
     async def place_oco_order(self, params):
         type(self).submitted = dict(params)
@@ -132,6 +136,7 @@ def service(session_factory, monkeypatch):
     ProtectionClient.response = None
     ProtectionClient.rejection = None
     ProtectionClient.submitted = None
+    ProtectionClient.available = Decimal("0.015779")
     return SpotProtectionService(session_factory, ProtectionClient)
 
 
@@ -263,3 +268,24 @@ async def test_rejection_event_contains_safe_incident_context(
         assert event.metadata_json["position_id"] == position_id
         assert event.metadata_json["binance_error"] == "testnet rejected protection"
         assert event.metadata_json["attempted_parameters"]["symbol"] == "BTCUSDT"
+
+
+@pytest.mark.asyncio
+async def test_sellable_balance_caps_and_floors_protection_quantity(session_factory, monkeypatch):
+    position_id = seed(session_factory)
+    protection_service = service(session_factory, monkeypatch)
+    ProtectionClient.available = Decimal("0.012349")
+    result = await protection_service.establish(position_id)
+    assert result["protected"]
+    assert ProtectionClient.submitted["quantity"] == "0.01234"
+
+
+@pytest.mark.asyncio
+async def test_insufficient_sellable_balance_fails_without_submission(session_factory, monkeypatch):
+    position_id = seed(session_factory)
+    protection_service = service(session_factory, monkeypatch)
+    ProtectionClient.available = Decimal("0")
+    result = await protection_service.establish(position_id)
+    assert not result["protected"]
+    assert result["reason"] == "invalid_protective_quantity"
+    assert ProtectionClient.submitted is None

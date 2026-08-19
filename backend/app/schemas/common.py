@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.constants import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES
 
@@ -45,6 +45,15 @@ class CandleData(BaseModel):
                 else value.astimezone(timezone.utc)
             )
         return value
+
+    @model_validator(mode="after")
+    def structurally_valid_ohlc(self):
+        prices = (self.open, self.high, self.low, self.close)
+        if any(price <= 0 for price in prices):
+            raise ValueError("ohlc_prices_must_be_positive")
+        if not (self.low <= self.open <= self.high and self.low <= self.close <= self.high):
+            raise ValueError("invalid_ohlc_envelope")
+        return self
 
 
 class CandleOut(CandleData, ORMModel):

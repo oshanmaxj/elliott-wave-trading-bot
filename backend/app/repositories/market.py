@@ -7,6 +7,14 @@ from app.models import Candle, Symbol
 from app.schemas.common import CandleData
 
 
+def valid_ohlc(candle) -> bool:
+    prices = (candle.open, candle.high, candle.low, candle.close)
+    return all(price > 0 for price in prices) and (
+        candle.low <= candle.open <= candle.high
+        and candle.low <= candle.close <= candle.high
+    )
+
+
 def ensure_symbol(db: Session, symbol: str) -> Symbol:
     existing = db.scalar(select(Symbol).where(Symbol.symbol == symbol))
     if existing:
@@ -19,6 +27,8 @@ def ensure_symbol(db: Session, symbol: str) -> Symbol:
 
 
 def upsert_candle(db: Session, symbol_id: int, timeframe: str, data: CandleData) -> tuple[Candle, bool]:
+    if not valid_ohlc(data):
+        raise ValueError("invalid_ohlc_envelope")
     row = db.scalar(select(Candle).where(and_(Candle.symbol_id == symbol_id, Candle.timeframe == timeframe, Candle.open_time == data.open_time)))
     created = row is None
     if row is None:

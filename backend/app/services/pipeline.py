@@ -36,6 +36,7 @@ from app.services.broadcast import broadcaster
 from app.services.settings import get_runtime_settings
 from app.structure.engine import classify_trend, detect_structure_break
 from app.structure.swings import detect_confirmed_pivot
+from app.repositories.market import valid_ohlc
 from app.trading.paper import process_paper_candle
 from app.trading.validation import validate_geometry
 
@@ -179,6 +180,19 @@ async def process_closed_candle(
             )
         )
         candles.reverse()
+        invalid = [row for row in candles if not valid_ohlc(row)]
+        if invalid:
+            db.add(BotLog(
+                level="CRITICAL", service="market_data",
+                event_type="strategy_blocked_invalid_ohlc",
+                message="Strategy evaluation blocked by structurally invalid candle data",
+                context_json={"symbol": symbol_name, "timeframe": candle.timeframe,
+                              "current_candle_id": candle.id,
+                              "invalid_candle_ids": [row.id for row in invalid]},
+            ))
+            db.commit()
+            return {"processed": False, "reason": "invalid_market_data",
+                    "invalid_candle_ids": [row.id for row in invalid]}
         indicators = calculate_indicators(candles)
         indicators["_smc_version"] = 4
         for candidate in detect_confirmed_pivot(

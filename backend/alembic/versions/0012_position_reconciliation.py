@@ -18,7 +18,9 @@ def upgrade():
         "live_positions",
         sa.Column("last_reconciled_at", sa.DateTime(timezone=True), nullable=True),
     )
+    op.add_column("live_positions", sa.Column("exit_reason", sa.String(32), nullable=True))
 
 
 def downgrade():
+    op.drop_column("live_positions", "exit_reason")
     op.drop_column("live_positions", "last_reconciled_at")

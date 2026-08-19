@@ -3,6 +3,12 @@ export const normalizeLiveCandle = payload => ({
   id: payload.id ?? `live-${payload.symbol}-${payload.timeframe}-${payload.open_time}`,
 })
 
+export const toChartCandle = candle => ({
+  time: Math.floor(new Date(candle.open_time).getTime() / 1000),
+  open: Number(candle.open), high: Number(candle.high),
+  low: Number(candle.low), close: Number(candle.close),
+})
+
 export const mergeLiveCandle = (candles, payload, symbol, timeframe) => {
   if (payload.symbol !== symbol || payload.timeframe !== timeframe) return candles
   const next = normalizeLiveCandle(payload)

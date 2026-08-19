@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -140,12 +141,12 @@ class SpotProtectionService:
                 )
                 db.commit()
                 return {"protected": False, "reason": reason}
-            position.stop_loss = setup.stop_loss
-            position.take_profit_1 = setup.take_profit_1
-            position.take_profit_2 = setup.take_profit_2
-            position.take_profit_3 = setup.take_profit_3
             position.protection_status = "protection_pending"
-            self._event(db, "protection_pending", position, symbol)
+            self._event(db, "protection_pending", position, symbol, metadata={
+                "raw_stop_price": str(setup.stop_loss),
+                "raw_take_profit_price": str(setup.take_profit_1),
+                "raw_remaining_quantity": str(position.remaining_quantity),
+            })
             db.commit()
 
         try:
@@ -153,17 +154,22 @@ class SpotProtectionService:
                 _, execution_settings = load_stored_settings(db, self.settings)
                 position = db.get(LivePosition, position_id)
                 symbol = db.get(Symbol, position.symbol_id)
+                setup = db.get(TradeSetup, position.originating_trade_setup_id)
             client = self.client_factory(execution_settings)
             info = (await client.exchange_info(symbol.symbol))["symbols"][0]
+            account = await client.account()
+            base_balance = next((Decimal(row["free"]) for row in account.get("balances", [])
+                                 if row["asset"] == symbol.base_asset), Decimal("0"))
             minimum, maximum, step = quantity_limits(info, market=False)
             tick = price_tick(info)
             if step <= 0:
                 raise ValueError("invalid_protective_quantity_step")
             if tick <= 0:
                 raise ValueError("invalid_protective_price_tick")
-            quantity = floor_quantity_to_step(position.remaining_quantity, step)
-            stop = floor_quantity_to_step(position.stop_loss, tick)
-            target = floor_quantity_to_step(position.take_profit_1, tick)
+            sellable = min(Decimal(position.remaining_quantity), base_balance)
+            quantity = floor_quantity_to_step(sellable, step)
+            stop = floor_quantity_to_step(Decimal(setup.stop_loss), tick)
+            target = floor_quantity_to_step(Decimal(setup.take_profit_1), tick)
             if quantity <= 0 or quantity < minimum or quantity > maximum:
                 raise ValueError("invalid_protective_quantity")
             if (
@@ -267,6 +273,9 @@ class SpotProtectionService:
                 protection.acknowledged_at = datetime.now(timezone.utc)
                 protection.status = "protected" if executing else "protection_failed"
                 position.protection_status = "protected" if executing else "unprotected"
+                if executing:
+                    position.stop_loss = protection.stop_price
+                    position.take_profit_1 = protection.take_profit_price
                 event_type = (
                     "protection_acknowledged" if executing else "protection_failed"
                 )
@@ -278,7 +287,18 @@ class SpotProtectionService:
                     severity="INFO" if executing else "CRITICAL",
                     protection=protection,
                     reason=None if executing else "protective_order_not_executing",
-                    metadata={"order_list_id": protection.order_list_id},
+                    metadata={
+                        "order_list_id": protection.order_list_id,
+                        "raw_quantity": str(position.remaining_quantity),
+                        "sellable_balance": str(base_balance),
+                        "normalized_quantity": str(quantity),
+                        "raw_stop_price": str(setup.stop_loss),
+                        "normalized_stop_price": str(stop),
+                        "raw_take_profit_price": str(setup.take_profit_1),
+                        "normalized_take_profit_price": str(target),
+                        "stop_order_id": protection.stop_exchange_order_id,
+                        "take_profit_order_id": protection.take_profit_exchange_order_id,
+                    },
                 )
                 return {
                     "protected": executing,

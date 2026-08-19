@@ -89,12 +89,20 @@ class PositionReconciliationService:
                     remaining = min(previous_quantity, owned)
                     open_orders = await client.open_orders(symbol.symbol)
                     await client.trades(symbol.symbol)  # verifies signed trade-history access
-                    protective_open = bool(protection and any(
-                        str(order.get("orderListId")) == str(protection.order_list_id)
-                        or order.get("clientOrderId") in {
-                            protection.stop_client_order_id,
-                            protection.take_profit_client_order_id,
-                        } for order in open_orders))
+                    protective_open = False
+                    if protection and protection.order_list_id:
+                        try:
+                            order_list = await client.get_order_list(protection.order_list_id)
+                            listed = {str(order.get("orderId")) for order in order_list.get("orders", [])}
+                            protective_open = (
+                                order_list.get("listOrderStatus") == "EXECUTING"
+                                and bool(protection.stop_exchange_order_id)
+                                and bool(protection.take_profit_exchange_order_id)
+                                and protection.stop_exchange_order_id in listed
+                                and protection.take_profit_exchange_order_id in listed
+                            )
+                        except Exception:
+                            protective_open = False
                     position.remaining_quantity = remaining
                     position.last_reconciled_at = now
                     if remaining == 0:

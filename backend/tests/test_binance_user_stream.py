@@ -273,7 +273,7 @@ async def test_fill_is_idempotent_and_position_is_updated(monkeypatch, session_f
             and position.remaining_quantity == Decimal("0.1999")
         )
         assert (position.stop_loss, position.take_profit_1, position.take_profit_2, position.take_profit_3) == (
-            Decimal("48000"), Decimal("54000"), Decimal("56000"), Decimal("58000")
+            Decimal("0"), None, None, None
         )
         assert protected == [position.id]
 

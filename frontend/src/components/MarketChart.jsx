@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { CandlestickSeries, ColorType, LineSeries, createChart, createSeriesMarkers } from 'lightweight-charts'
+import { toChartCandle } from '../marketData'
 
 const seconds = value => Math.floor(new Date(value).getTime() / 1000)
 
@@ -24,7 +25,7 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
     candleSeriesRef.current = candleSeries
     renderedCandlesRef.current = candles
     const candleById = Object.fromEntries(candles.map(c => [c.id, c]))
-    candleSeries.setData(candles.map(c => ({ time: seconds(c.open_time), open: +c.open, high: +c.high, low: +c.low, close: +c.close })))
+    candleSeries.setData(candles.map(toChartCandle))
     const colors = { ema20: '#ffcc66', ema50: '#a78bfa', ema200: '#4ea8de' }
     Object.entries(colors).forEach(([key, color]) => {
       const values = candles.map(c => c.indicators?.[key]).filter(Boolean)
@@ -124,7 +125,7 @@ export default function MarketChart({ candles, swings, structure, fvg, liquidity
     const previous = renderedCandlesRef.current
     const next = candles.at(-1)
     const sameHistory = previous.length === candles.length && previous.at(-1)?.open_time === next.open_time
-    const value = c => ({ time: seconds(c.open_time), open: +c.open, high: +c.high, low: +c.low, close: +c.close })
+    const value = toChartCandle
     if (sameHistory) series.update(value(next))
     else series.setData(candles.map(value))
     renderedCandlesRef.current = candles
