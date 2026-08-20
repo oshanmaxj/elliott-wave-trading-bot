@@ -3,8 +3,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
-
 from app.execution.reconciliation import PositionReconciliationService, position_mark
 from app.models import LivePosition, Symbol, TradeSetup
 
@@ -80,3 +78,26 @@ async def test_real_balance_keeps_position_and_repairs_remaining_quantity(sessio
         assert row.status == "partially_closed"
         assert row.remaining_quantity == Decimal("0.4")
         assert row.protection_status == "unprotected"
+        assert row.stop_loss == Decimal("95")
+        assert row.take_profit_1 == Decimal("110")
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_preserves_existing_protection_levels(session_factory):
+    position_id = seed_position(session_factory)
+    with session_factory.begin() as db:
+        row = db.get(LivePosition, position_id)
+        row.stop_loss = Decimal("94")
+        row.take_profit_1 = Decimal("111")
+        row.take_profit_2 = Decimal("120")
+
+    FakeClient.balance = Decimal("1")
+    service = PositionReconciliationService(session_factory, FakeClient)
+    service._client_settings = lambda: SimpleNamespace(binance_environment="testnet")
+    await service.reconcile_all()
+
+    with session_factory() as db:
+        row = db.get(LivePosition, position_id)
+        assert (row.stop_loss, row.take_profit_1, row.take_profit_2) == (
+            Decimal("94"), Decimal("111"), Decimal("120")
+        )

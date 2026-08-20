@@ -9,7 +9,8 @@ from app.core.logging import log_event
 from app.database.session import SessionLocal
 from app.execution.binance import BinanceSpotClient
 from app.execution.credentials import load_stored_settings
-from app.models import ExecutionEvent, LivePosition, ProtectiveOrder, Symbol
+from app.execution.positions import restore_setup_protection_levels
+from app.models import ExecutionEvent, LivePosition, ProtectiveOrder, Symbol, TradeSetup
 
 ACTIVE_POSITION_STATUSES = ("open", "partially_closed")
 
@@ -89,11 +90,15 @@ class PositionReconciliationService:
                     protection = db.scalar(select(ProtectiveOrder).where(
                         ProtectiveOrder.live_position_id == position.id
                     ).order_by(ProtectiveOrder.id.desc()))
+                    setup = db.get(TradeSetup, position.originating_trade_setup_id)
+                    protection_levels_restored = restore_setup_protection_levels(
+                        position, setup
+                    )
                     previous_quantity = Decimal(position.remaining_quantity)
                     owned = balances.get(symbol.base_asset, Decimal("0"))
                     # Never increase a bot position from unrelated account holdings.
                     remaining = min(previous_quantity, owned)
-                    open_orders = await client.open_orders(symbol.symbol)
+                    await client.open_orders(symbol.symbol)
                     await client.trades(symbol.symbol)  # verifies signed trade-history access
                     protective_open = False
                     if protection and protection.order_list_id:
@@ -127,6 +132,7 @@ class PositionReconciliationService:
                                        "remaining_quantity": str(remaining),
                                        "account_base_balance": str(owned),
                                        "protective_orders_open": protective_open,
+                                       "protection_levels_restored": protection_levels_restored,
                                        "status": position.status}))
                     db.commit()
                     results.append({"position_id": position.id, "symbol": symbol.symbol,

@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.core.logging import log_event
 from app.database.session import SessionLocal
 from app.execution.credentials import load_stored_settings
+from app.execution.positions import restore_setup_protection_levels
 from app.models import (
     ExecutionEvent,
     ExecutionFill,
@@ -469,13 +470,13 @@ class BinanceUserStreamService:
         )
         quantity = event["last_quantity"]
         if event["side"] == "BUY":
+            setup = db.get(TradeSetup, order.trade_setup_id)
             owned = quantity - (
                 event["commission"]
                 if event["commission_asset"] == symbol.base_asset
                 else Decimal("0")
             )
             if not position:
-                setup = db.get(TradeSetup, order.trade_setup_id)
                 position = LivePosition(
                     environment=order.environment,
                     symbol_id=order.symbol_id,
@@ -485,15 +486,16 @@ class BinanceUserStreamService:
                     base_quantity=owned,
                     remaining_quantity=owned,
                     average_entry=event["last_price"],
-                    stop_loss=Decimal("0"),
-                    take_profit_1=None,
-                    take_profit_2=None,
-                    take_profit_3=None,
+                    stop_loss=setup.stop_loss,
+                    take_profit_1=setup.take_profit_1,
+                    take_profit_2=setup.take_profit_2,
+                    take_profit_3=setup.take_profit_3,
                     protection_status="protection_pending",
                     opened_at=now,
                 )
                 db.add(position)
             else:
+                restore_setup_protection_levels(position, setup)
                 total = position.base_quantity + owned
                 position.average_entry = (
                     (

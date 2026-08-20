@@ -249,11 +249,11 @@ async def test_fill_is_idempotent_and_position_is_updated(monkeypatch, session_f
                 "S": "BUY",
                 "o": "MARKET",
                 "x": "TRADE",
-                "X": "FILLED",
-                "z": ".2",
-                "Z": "10000",
-                "l": ".2",
-                "L": "50000",
+                    "X": "FILLED",
+                    "z": ".2",
+                    "Z": "10020",
+                    "l": ".2",
+                    "L": "50100",
                 "n": ".0001",
                 "N": "BTC",
                 "t": 9,
@@ -265,16 +265,20 @@ async def test_fill_is_idempotent_and_position_is_updated(monkeypatch, session_f
     with session_factory() as db:
         order = db.scalar(select(ExecutionOrder))
         fills = list(db.scalars(select(ExecutionFill)))
-        position = db.scalar(select(LivePosition))
-        assert order.status == "FILLED" and order.average_fill_price == Decimal("50000")
+        positions = list(db.scalars(select(LivePosition)))
+        assert len(positions) == 1
+        position = positions[0]
+        assert order.status == "FILLED" and order.average_fill_price == Decimal("50100")
         assert (
             len(fills) == 1
             and position.status == "open"
             and position.remaining_quantity == Decimal("0.1999")
         )
         assert (position.stop_loss, position.take_profit_1, position.take_profit_2, position.take_profit_3) == (
-            Decimal("0"), None, None, None
+            Decimal("48000"), Decimal("54000"), Decimal("56000"), Decimal("58000")
         )
+        assert position.average_entry == Decimal("50100")
+        assert position.average_entry != db.get(TradeSetup, 99).preferred_entry
         assert protected == [position.id]
 
 
