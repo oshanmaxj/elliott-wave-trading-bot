@@ -527,6 +527,9 @@ class BinanceUserStreamService:
                 position.remaining_quantity = Decimal("0")
                 position.status = "closed"
                 position.closed_at = now
+                if "-close-" in order.client_order_id:
+                    position.exit_reason = "manual_close"
+                    position.exit_price = event["last_price"]
         db.flush()
         return position.id if position else None
 

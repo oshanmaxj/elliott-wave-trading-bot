@@ -164,6 +164,15 @@ class BinanceSpotClient:
             signed=True,
         )
 
+    async def cancel_order_list(self, symbol, order_list_id):
+        return await self.request(
+            "DELETE",
+            "/api/v3/orderList",
+            params={"symbol": symbol, "orderListId": order_list_id},
+            signed=True,
+            trading=True,
+        )
+
     async def cancel_order(self, symbol, client_order_id):
         return await self.request(
             "DELETE",

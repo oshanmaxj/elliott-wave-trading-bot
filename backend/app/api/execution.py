@@ -342,7 +342,15 @@ async def positions(db: Session = Depends(get_db)):
         marks = await position_reconciliation.marks()
     except Exception:
         marks = {}
-    return [{**serialize(row), **marks.get(row.id, position_mark(row, None))} for row in rows]
+    return [
+        {
+            **serialize(row),
+            "symbol": db.get(Symbol, row.symbol_id).symbol,
+            "base_asset": db.get(Symbol, row.symbol_id).base_asset,
+            **marks.get(row.id, position_mark(row, None)),
+        }
+        for row in rows
+    ]
 
 
 @router.get("/positions/summary")
@@ -423,6 +431,21 @@ def position_protection(row_id: int, db: Session = Depends(get_db)):
             .order_by(ProtectiveOrder.id.desc())
         )
     ]
+
+
+@router.post("/positions/{row_id}/close")
+async def close_position(
+    row_id: int, current=Depends(require_roles("admin", "trader"))
+):
+    from app.execution.position_close import (
+        ManualCloseError,
+        manual_position_close_service,
+    )
+
+    try:
+        return await manual_position_close_service.close_position(row_id, current)
+    except ManualCloseError as exc:
+        raise HTTPException(exc.status_code, exc.reason) from exc
 
 
 @router.post("/positions/{row_id}/protection/establish", dependencies=[Depends(admin)])

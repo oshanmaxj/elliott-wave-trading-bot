@@ -539,6 +539,16 @@ def history(db: Session = Depends(get_db)):
         symbol = db.get(Symbol, position.symbol_id)
         setup = db.get(TradeSetup, position.originating_trade_setup_id)
         cost = position.average_entry * position.base_quantity
+        close_order = db.scalar(
+            select(ExecutionOrder)
+            .where(
+                ExecutionOrder.trade_setup_id == position.originating_trade_setup_id,
+                ExecutionOrder.client_order_id.startswith(
+                    f"ws-test-pos-{position.id}-close-"
+                ),
+            )
+            .order_by(ExecutionOrder.id.desc())
+        )
         result.append({**clean(position), "position_id": position.id,
             "symbol": symbol.symbol if symbol else None,
             "setup_id": position.originating_trade_setup_id,
@@ -548,5 +558,6 @@ def history(db: Session = Depends(get_db)):
             "average_exit": position.exit_price,
             "realized_pnl_pct": (position.realized_pnl / cost * 100) if cost else None,
             "fees": position.total_fees,
+            "binance_order_id": close_order.exchange_order_id if close_order else None,
             "protection_outcome": position.protection_status})
     return result

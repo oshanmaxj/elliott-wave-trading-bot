@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from typing import Any
+from fastapi.encoders import jsonable_encoder
 
 from app.database.session import SessionLocal
 from app.models import BotLog
@@ -27,7 +28,7 @@ def configure_logging(level: str) -> None:
 
 
 def log_event(level: str, service: str, event_type: str, message: str, context: dict[str, Any] | None = None) -> None:
-    context = context or {}
+    context = jsonable_encoder(context or {})
     logger = logging.getLogger(service)
     getattr(logger, level.lower(), logger.info)("%s %s", message, json.dumps(context, default=str))
     try:
