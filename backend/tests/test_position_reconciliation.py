@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from app.execution.reconciliation import PositionReconciliationService, position_mark
-from app.models import LivePosition, Symbol, TradeSetup
+from app.models import BotRuntimeState, LivePosition, Symbol, TradeSetup
 
 
 def test_long_position_mark_price_profit_loss_and_flat():
@@ -101,3 +101,28 @@ async def test_reconciliation_preserves_existing_protection_levels(session_facto
         assert (row.stop_loss, row.take_profit_1, row.take_profit_2) == (
             Decimal("94"), Decimal("111"), Decimal("120")
         )
+
+
+@pytest.mark.asyncio
+async def test_paused_runtime_still_reconciles_existing_position(session_factory):
+    position_id = seed_position(session_factory)
+    with session_factory.begin() as db:
+        db.add(
+            BotRuntimeState(
+                status="running",
+                automatic_trading_enabled=True,
+                pause_new_entries=True,
+                kill_switch_enabled=False,
+            )
+        )
+
+    FakeClient.balance = Decimal("0.6")
+    service = PositionReconciliationService(session_factory, FakeClient)
+    service._client_settings = lambda: SimpleNamespace(binance_environment="testnet")
+    result = await service.reconcile_all()
+
+    assert result["reconciled"] == 1
+    with session_factory() as db:
+        row = db.get(LivePosition, position_id)
+        assert row.remaining_quantity == Decimal("0.6")
+        assert row.last_reconciled_at is not None

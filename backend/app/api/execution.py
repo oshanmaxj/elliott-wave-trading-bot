@@ -17,8 +17,8 @@ from app.execution.service import (
     client_order_id,
     setup_fingerprint,
 )
+from app.execution.runtime import runtime_state
 from app.models import (
-    BotRuntimeState,
     DailyRiskLedger,
     ExchangeAccount,
     ExecutionEvent,
@@ -162,7 +162,7 @@ async def approve(setup_id: int, db: Session = Depends(get_db), current=Depends(
     )
     if not setup:
         raise HTTPException(404, "Trade setup not found")
-    runtime = db.scalar(select(BotRuntimeState).limit(1))
+    runtime = runtime_state(db)
     if not runtime or not runtime.manual_approval_required:
         raise HTTPException(409, "Manual approval mode is not enabled")
     if setup.status not in {"ready", "eligible", "pending_approval"}:
@@ -452,7 +452,7 @@ def events(db: Session = Depends(get_db)):
 
 @router.get("/approval-queue")
 def queue(db: Session = Depends(get_db)):
-    runtime = db.scalar(select(BotRuntimeState).limit(1))
+    runtime = runtime_state(db)
     if not runtime or not runtime.manual_approval_required:
         return []
     return [

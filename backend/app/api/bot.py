@@ -12,6 +12,7 @@ from app.auth import current_user, require_roles
 from app.database.session import get_db
 from app.execution.binance import BinanceSpotClient
 from app.execution.credentials import credential_cipher, load_stored_settings
+from app.execution.runtime import runtime_state
 from app.services.binance_user_stream import user_stream
 from app.market_data.binance_ws import market_stream
 from app.models import (
@@ -59,7 +60,7 @@ require = require_roles
 
 
 def state(db):
-    row = db.scalar(select(BotRuntimeState).limit(1))
+    row = runtime_state(db)
     if not row:
         row = BotRuntimeState(
             environment="testnet",
@@ -90,7 +91,7 @@ def clean(row):
     return {c.name: getattr(row, c.name) for c in row.__table__.columns}
 
 
-def event(db, event_type, message, severity="INFO"):
+def event(db, event_type, message, severity="INFO", metadata=None):
     db.add(
         ExecutionEvent(
             severity=severity,
@@ -98,7 +99,7 @@ def event(db, event_type, message, severity="INFO"):
             exchange="binance",
             environment=state(db).environment,
             message=message,
-            metadata_json={},
+            metadata_json=metadata or {},
         )
     )
     db.commit()
@@ -136,6 +137,7 @@ def put_config(
     body: dict, db: Session = Depends(get_db), current=Depends(require("admin"))
 ):
     row = state(db)
+    previous = control_snapshot(row)
     for key in (
         "automatic_trading_enabled",
         "manual_approval_required",
@@ -153,66 +155,114 @@ def put_config(
     if not set(row.enabled_strategies_json) <= set(STRATEGIES):
         raise HTTPException(422, "Unsupported strategy")
     db.commit()
-    event(db, "bot_config_updated", f"Bot configuration updated by {current}")
+    now = datetime.now(timezone.utc)
+    if previous != control_snapshot(row):
+        log_transition(db, row, "config-update", current, previous, now)
+    else:
+        event(db, "bot_config_updated", f"Bot configuration updated by {current}")
     return clean(row)
 
 
-def transition(db, status, user):
+CONTROL_FIELDS = (
+    "status",
+    "automatic_trading_enabled",
+    "pause_new_entries",
+    "kill_switch_enabled",
+    "manual_approval_required",
+)
+
+
+def control_snapshot(row):
+    return {key: getattr(row, key) for key in CONTROL_FIELDS}
+
+
+def log_transition(db, row, action, user, previous, now, severity="INFO"):
+    event(
+        db,
+        f"bot_{action.replace('-', '_')}",
+        f"Bot control action {action} requested by {user}",
+        severity,
+        {
+            "previous_state": previous,
+            "requested_action": action,
+            "new_state": control_snapshot(row),
+            "actor": user,
+            "timestamp": now.isoformat(),
+        },
+    )
+
+
+def ensure_start_allowed(row):
+    if row.environment == "production":
+        raise HTTPException(423, "Production bot start remains locked")
+    if row.kill_switch_enabled:
+        raise HTTPException(
+            409, "Disable the kill switch through the safe reset flow before starting"
+        )
+    if not row.enabled_symbols_json or not row.enabled_strategies_json:
+        raise HTTPException(409, "Enable at least one symbol and strategy")
+
+
+def start_transition(db, user, action="start"):
     row = state(db)
+    ensure_start_allowed(row)
     now = datetime.now(timezone.utc)
-    row.status = status
-    row.pause_new_entries = status != "running"
-    if status == "running":
-        row.started_at = now
-        row.started_by = user
-    else:
-        row.stopped_at = now
-        row.stopped_by = user
+    previous = control_snapshot(row)
+    row.status = "running"
+    row.automatic_trading_enabled = True
+    row.pause_new_entries = False
+    row.started_at = now
+    row.started_by = user
     db.commit()
-    event(db, f"bot_{status}", f"Bot is now {status}")
+    log_transition(db, row, action, user, previous, now)
     return clean(row)
 
 
 @router.post("/bot/start")
 def start(db: Session = Depends(get_db), current=Depends(require("admin"))):
-    row = state(db)
-    if row.environment == "production":
-        raise HTTPException(423, "Production bot start remains locked")
-    if row.kill_switch_enabled:
-        raise HTTPException(409, "Disable the kill switch before starting")
-    if not row.enabled_symbols_json or not row.enabled_strategies_json:
-        raise HTTPException(409, "Enable at least one symbol and strategy")
-    return transition(db, "running", current)
+    return start_transition(db, current)
 
 
 @router.post("/bot/stop")
 def stop(db: Session = Depends(get_db), current=Depends(require("admin"))):
-    return transition(db, "stopped", current)
+    row = state(db)
+    now = datetime.now(timezone.utc)
+    previous = control_snapshot(row)
+    row.status = "stopped"
+    row.pause_new_entries = True
+    row.stopped_at = now
+    row.stopped_by = current
+    db.commit()
+    log_transition(db, row, "stop", current, previous, now)
+    return clean(row)
 
 
 @router.post("/bot/pause")
 def pause(db: Session = Depends(get_db), current=Depends(require("admin", "trader"))):
-    return transition(db, "paused", current)
+    row = state(db)
+    now = datetime.now(timezone.utc)
+    previous = control_snapshot(row)
+    row.pause_new_entries = True
+    db.commit()
+    log_transition(db, row, "pause", current, previous, now)
+    return clean(row)
 
 
 @router.post("/bot/resume")
 def resume(db: Session = Depends(get_db), current=Depends(require("admin", "trader"))):
-    return transition(db, "running", current)
+    return start_transition(db, current, "resume")
 
 
 @router.post("/bot/emergency-stop")
 def emergency(db: Session = Depends(get_db), current=Depends(require("admin"))):
     row = state(db)
+    now = datetime.now(timezone.utc)
+    previous = control_snapshot(row)
     row.kill_switch_enabled = True
     row.status = "kill_switch_active"
     row.pause_new_entries = True
     db.commit()
-    event(
-        db,
-        "execution_kill_switch_enabled",
-        f"Emergency stop activated by {current}",
-        "CRITICAL",
-    )
+    log_transition(db, row, "emergency-stop", current, previous, now, "CRITICAL")
     return clean(row)
 
 

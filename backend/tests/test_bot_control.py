@@ -5,7 +5,8 @@ from app.api import auth as auth_api
 from app.api import bot
 from app.auth import hash_password
 from app.database.session import get_db
-from app.models import ExchangeAccount, User
+from app.models import BotRuntimeState, ExchangeAccount, ExecutionEvent, User
+from app.services.pipeline import automatic_routing_enabled
 
 
 def make_client(session_factory, monkeypatch):
@@ -103,6 +104,91 @@ def test_protection_csrf_logout_and_authorization(session_factory, monkeypatch):
     assert api.post("/api/bot/start", headers=csrf(api)).json()["status"] == "running"
     assert api.post("/api/auth/logout", headers=csrf(api)).status_code == 200
     assert api.get("/api/auth/me").status_code == 401
+
+
+def test_control_state_transitions_resume_entries_without_clearing_kill_switch(
+    session_factory, monkeypatch
+):
+    api = make_client(session_factory, monkeypatch)
+    login(api)
+    headers = csrf(api)
+    configured = api.put(
+        "/api/bot/config",
+        headers=headers,
+        json={
+            "enabled_symbols_json": ["BTCUSDT"],
+            "enabled_timeframes_json": ["1m"],
+            "enabled_strategies_json": ["wave_3_continuation"],
+            "manual_approval_required": False,
+        },
+    ).json()
+    assert configured["manual_approval_required"] is False
+
+    started = api.post("/api/bot/start", headers=headers).json()
+    assert started["status"] == "running"
+    assert started["automatic_trading_enabled"] is True
+    assert started["pause_new_entries"] is False
+    assert started["manual_approval_required"] is False
+
+    paused = api.post("/api/bot/pause", headers=headers).json()
+    assert paused["status"] == "running"
+    assert paused["automatic_trading_enabled"] is True
+    assert paused["pause_new_entries"] is True
+    assert paused["kill_switch_enabled"] is False
+
+    resumed = api.post("/api/bot/resume", headers=headers).json()
+    assert resumed["status"] == "running"
+    assert resumed["automatic_trading_enabled"] is True
+    assert resumed["pause_new_entries"] is False
+
+    stopped = api.post("/api/bot/stop", headers=headers).json()
+    assert stopped["status"] == "stopped"
+    restarted = api.post("/api/bot/start", headers=headers).json()
+    assert restarted["status"] == "running"
+    assert restarted["pause_new_entries"] is False
+
+    emergency = api.post("/api/bot/emergency-stop", headers=headers).json()
+    assert emergency["kill_switch_enabled"] is True
+    assert emergency["pause_new_entries"] is True
+    assert api.post("/api/bot/start", headers=headers).status_code == 409
+    assert api.post("/api/bot/resume", headers=headers).status_code == 409
+
+    with session_factory() as db:
+        runtime = db.query(BotRuntimeState).one()
+        events = list(
+            db.query(ExecutionEvent)
+            .filter(ExecutionEvent.event_type.like("bot_%"))
+            .all()
+        )
+        assert runtime.kill_switch_enabled is True
+        transition = next(row for row in events if row.event_type == "bot_pause")
+        assert transition.metadata_json["requested_action"] == "pause"
+        assert transition.metadata_json["actor"] == "admin@example.com"
+        assert transition.metadata_json["previous_state"]["pause_new_entries"] is False
+        assert transition.metadata_json["new_state"]["pause_new_entries"] is True
+        assert transition.metadata_json["timestamp"]
+
+
+def test_resumed_runtime_is_automatically_routable(session_factory, monkeypatch):
+    api = make_client(session_factory, monkeypatch)
+    login(api)
+    headers = csrf(api)
+    api.put(
+        "/api/bot/config",
+        headers=headers,
+        json={
+            "enabled_symbols_json": ["BTCUSDT"],
+            "enabled_timeframes_json": ["1m"],
+            "enabled_strategies_json": ["wave_3_continuation"],
+            "manual_approval_required": False,
+        },
+    )
+    api.post("/api/bot/start", headers=headers)
+    api.post("/api/bot/pause", headers=headers)
+    api.post("/api/bot/resume", headers=headers)
+
+    with session_factory() as db:
+        assert automatic_routing_enabled(db.query(BotRuntimeState).one()) is True
 
 
 def test_binance_credentials_encrypted_secret_never_returned(

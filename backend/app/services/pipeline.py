@@ -9,6 +9,7 @@ from app.indicators.service import calculate_indicators
 from app.elliott.service import process_elliott_candidates
 from app.elliott.setups import select_wave_strategy
 from app.execution.strategies import runtime_strategy_for_setup_name
+from app.execution.runtime import runtime_state
 from app.models import (
     Alert,
     AnalysisSnapshot,
@@ -143,7 +144,7 @@ async def process_closed_candle(
         candle = db.get(Candle, candle_id)
         if not candle or not candle.is_closed:
             return {"processed": False, "reason": "candle_not_closed"}
-        runtime = db.scalar(select(BotRuntimeState).limit(1))
+        runtime = runtime_state(db)
         symbol_name = db.scalar(select(Symbol.symbol).where(Symbol.id == candle.symbol_id))
         if runtime and runtime.status == "running" and (
             symbol_name not in runtime.enabled_symbols_json

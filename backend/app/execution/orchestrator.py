@@ -9,6 +9,7 @@ from app.core.logging import log_event
 from app.database.session import SessionLocal
 from app.execution.binance import BinanceError, BinanceSpotClient
 from app.execution.credentials import load_stored_settings
+from app.execution.runtime import runtime_state
 from app.execution.service import (
     ExecutionRiskEngine,
     client_order_id,
@@ -18,7 +19,6 @@ from app.execution.strategies import originating_runtime_strategy
 from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
 from app.execution.filters import quantity_limits, serialize_quantity
 from app.models import (
-    BotRuntimeState,
     DailyRiskLedger,
     ExecutionEvent,
     ExecutionOrder,
@@ -88,7 +88,7 @@ class AutomaticTestnetExecutor:
         )
 
     def _preflight_reasons(self, db, setup, symbol, manual_approved=False):
-        runtime = db.scalar(select(BotRuntimeState).limit(1))
+        runtime = runtime_state(db)
         reasons = []
         if (
             self.settings.binance_environment != "testnet"

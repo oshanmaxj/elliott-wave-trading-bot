@@ -9,7 +9,8 @@ from app.execution.filters import (
     validate_notional,
     validate_symbol_tradeability,
 )
-from app.models import BotRuntimeState, ExecutionOrder, LivePosition
+from app.execution.runtime import runtime_state
+from app.models import ExecutionOrder, LivePosition
 from app.services.settings import get_runtime_settings
 from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
 from app.trading.validation import validate_setup
@@ -80,7 +81,7 @@ class ExecutionRiskEngine:
             reasons.append("symbol_not_allowed")
         if setup.strategy not in self.s.allowed_execution_strategies:
             reasons.append("execution_strategy_not_allowed")
-        runtime = db.scalar(select(BotRuntimeState).limit(1))
+        runtime = runtime_state(db)
         enabled_timeframes = (
             runtime.enabled_timeframes_json if runtime else ["15m", "1h", "4h"]
         )
