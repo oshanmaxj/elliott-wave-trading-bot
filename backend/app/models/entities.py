@@ -618,6 +618,48 @@ class PaperPosition(Base, TimestampMixin):
     slippage_bps: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("2"))
 
 
+class PaperForwardTrade(Base, TimestampMixin):
+    """One immutable-geometry production-market simulation per canonical setup."""
+    __tablename__ = "paper_forward_trades"
+    __table_args__ = (UniqueConstraint("setup_id", name="uq_paper_forward_setup"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    setup_id: Mapped[int] = mapped_column(ForeignKey("trade_setups.id", ondelete="RESTRICT"), index=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    strategy: Mapped[str] = mapped_column(String(64), index=True)
+    direction: Mapped[str] = mapped_column(String(16), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8), index=True)
+    confidence_score: Mapped[Decimal] = mapped_column(Numeric(8, 4), index=True)
+    simulated_entry: Mapped[Decimal] = mapped_column(price_type)
+    entry_min: Mapped[Decimal] = mapped_column(price_type)
+    entry_max: Mapped[Decimal] = mapped_column(price_type)
+    stop_loss: Mapped[Decimal] = mapped_column(price_type)
+    active_stop: Mapped[Decimal] = mapped_column(price_type)
+    take_profit_1: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    take_profit_2: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    take_profit_3: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    next_target: Mapped[int] = mapped_column(Integer, default=1)
+    initial_quantity: Mapped[Decimal] = mapped_column(price_type)
+    remaining_quantity: Mapped[Decimal] = mapped_column(price_type)
+    risk_amount: Mapped[Decimal] = mapped_column(price_type)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    exit_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    realized_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
+    fees: Mapped[Decimal] = mapped_column(price_type, default=0)
+    fee_rate_pct: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("0.1"))
+    status: Mapped[str] = mapped_column(String(32), index=True, default="waiting_entry")
+    max_favorable_excursion: Mapped[Decimal] = mapped_column(price_type, default=0)
+    max_adverse_excursion: Mapped[Decimal] = mapped_column(price_type, default=0)
+    mfe_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    mae_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    holding_bars: Mapped[int] = mapped_column(Integer, default=0)
+    is_ambiguous: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    market_data_source: Mapped[str] = mapped_column(String(64), default="binance_production_spot_db")
+
+
 class ExchangeAccount(Base, TimestampMixin):
     __tablename__ = "exchange_accounts"
     id: Mapped[int] = mapped_column(primary_key=True)

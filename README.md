@@ -270,3 +270,27 @@ Production requires all of `BINANCE_EXECUTION_ENABLED=true`, `BINANCE_ENVIRONMEN
 Optional connection-only smoke test: from `backend`, set `RUN_BINANCE_TESTNET_SMOKE=true` and run `python scripts/binance_testnet_smoke.py`. It sends no order unless `RUN_BINANCE_ORDER_TEST=true`; even then it uses Binance's validation endpoint only.
 
 Known limitations: exchange-native OCO/protective exit automation and the Binance user-data stream worker are not enabled in this initial guarded slice; positions must not be treated as fully protected until those components are deployed and monitored. Production execution remains locked.
+# Production-market Paper Forward Testing
+
+WaveScope records one independent paper-forward result for each eligible canonical
+`TradeSetup`. The engine uses only closed Binance Production Spot candles already
+stored in `candles`; it never reads Testnet fills to calculate strategy performance.
+Entry is triggered by the setup entry zone and simulated at `preferred_entry`.
+TP1/TP2/TP3 use 30%/40%/30% exits and TP1 moves the remaining stop to breakeven.
+The fee model defaults to 0.1% taker fees and synthetic slippage is zero.
+
+If the active stop and target are both touched by one candle, the stop wins. The
+trade is marked ambiguous and remains in net PnL/R, but is excluded from headline
+wins, losses, and win rate. Only one exit event is processed per candle.
+
+Apply the schema and preview/apply a historical evaluation from `backend`:
+
+```bash
+alembic upgrade head
+python scripts/backfill_paper_forward.py --symbol BTCUSDT --start 2026-08-01T00:00:00Z --end 2026-08-24T00:00:00Z --dry-run
+python scripts/backfill_paper_forward.py --symbol BTCUSDT --start 2026-08-01T00:00:00Z --end 2026-08-24T00:00:00Z --apply
+```
+
+Authenticated clients can inspect `/api/paper-forward/summary`, `/trades`,
+`/strategies`, `/confidence`, `/timeframes`, and `/compare-testnet`. Administrators
+can POST the same `symbol`, `start`, `end`, and `apply` fields to `/backfill`.

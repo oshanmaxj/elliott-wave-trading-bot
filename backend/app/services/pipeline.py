@@ -39,6 +39,7 @@ from app.structure.engine import classify_trend, detect_structure_break
 from app.structure.swings import detect_confirmed_pivot
 from app.repositories.market import valid_ohlc
 from app.trading.paper import process_paper_candle
+from app.trading.paper_forward import process_paper_forward_candle
 from app.trading.validation import validate_geometry
 
 
@@ -1000,6 +1001,8 @@ async def process_closed_candle(
         if allow_trading_side_effects:
             for paper_position in process_paper_candle(db, candle):
                 events.append(("paper_position_updated", serialize(paper_position)))
+            for forward_trade in process_paper_forward_candle(db, candle):
+                events.append(("paper_forward_trade_updated", serialize(forward_trade)))
         trend = classify_trend(swings)
         latest_event = db.scalar(
             select(MarketStructureEvent)

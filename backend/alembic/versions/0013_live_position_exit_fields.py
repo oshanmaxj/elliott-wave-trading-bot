@@ -21,21 +21,39 @@ def _live_position_columns() -> set[str]:
 
 def upgrade():
     columns = _live_position_columns()
+    repaired = []
     if "exit_reason" not in columns:
         op.add_column(
             "live_positions",
             sa.Column("exit_reason", sa.String(32), nullable=True),
         )
+        repaired.append("exit_reason")
     if "exit_price" not in columns:
         op.add_column(
             "live_positions",
             sa.Column("exit_price", sa.Numeric(30, 12), nullable=True),
         )
+        repaired.append("exit_price")
+    if repaired:
+        op.create_table(
+            "migration_0013_repairs",
+            sa.Column("column_name", sa.String(32), primary_key=True),
+        )
+        table = sa.table("migration_0013_repairs", sa.column("column_name", sa.String(32)))
+        op.bulk_insert(table, [{"column_name": name} for name in repaired])
 
 
 def downgrade():
+    inspector = sa.inspect(op.get_bind())
+    if "migration_0013_repairs" not in inspector.get_table_names():
+        return
+    repaired = {
+        row[0] for row in op.get_bind().execute(
+            sa.text("SELECT column_name FROM migration_0013_repairs")
+        )
+    }
     columns = _live_position_columns()
-    if "exit_price" in columns:
-        op.drop_column("live_positions", "exit_price")
-    if "exit_reason" in columns:
-        op.drop_column("live_positions", "exit_reason")
+    for name in ("exit_price", "exit_reason"):
+        if name in repaired and name in columns:
+            op.drop_column("live_positions", name)
+    op.drop_table("migration_0013_repairs")
