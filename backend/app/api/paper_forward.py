@@ -2,13 +2,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import current_user, require_roles
 from app.database.session import get_db
-from app.models import PaperForwardTrade
+from app.models import PaperForwardTrade, Wave3HAResearchSignal
 from app.trading.paper_forward import backfill, comparison_rows
 
 router = APIRouter(prefix="/api/paper-forward", tags=["paper-forward"], dependencies=[Depends(current_user)])
@@ -101,6 +101,32 @@ def confidence_grouped(rows):
     return [{"value": f"{low}-{high}", **stats([r for r in rows if low <= D(r.confidence_score) <= high])} for low, high in buckets]
 
 
+def research_stats(rows):
+    values = [D(row.realized_r) for row in rows if row.realized_r is not None]
+    wins, losses = sum(x > 0 for x in values), sum(x < 0 for x in values)
+    gross_profit = sum((x for x in values if x > 0), D("0"))
+    gross_loss = abs(sum((x for x in values if x < 0), D("0")))
+    ordered = sorted(values)
+    median = (ordered[len(ordered)//2] if len(ordered) % 2 else (ordered[len(ordered)//2-1] + ordered[len(ordered)//2]) / 2) if ordered else D("0")
+    equity = peak = drawdown = D("0")
+    streak = max_streak = 0
+    for value in values:
+        equity += value
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak - equity)
+        streak = streak + 1 if value < 0 else 0
+        max_streak = max(max_streak, streak)
+    return {"total_trades": len(values), "wins": wins, "losses": losses,
+            "win_rate": D(wins * 100) / len(values) if values else D("0"),
+            "net_r": sum(values, D("0")), "average_r": sum(values, D("0")) / len(values) if values else D("0"),
+            "median_r": median, "expectancy": sum(values, D("0")) / len(values) if values else D("0"),
+            "profit_factor": gross_profit / gross_loss if gross_loss else None, "max_drawdown_r": drawdown,
+            "consecutive_losses": max_streak,
+            "average_mfe_r": sum((D(r.mfe_r) for r in rows), D("0")) / len(rows) if rows else D("0"),
+            "average_mae_r": sum((D(r.mae_r) for r in rows), D("0")) / len(rows) if rows else D("0"),
+            "average_holding_seconds": sum(r.holding_seconds for r in rows) / len(rows) if rows else 0}
+
+
 FilterSymbol = Query(None, max_length=32)
 FilterStrategy = Query(None, max_length=64)
 FilterTimeframe = Query(None, pattern="^(1m|5m|15m|1h|4h)$")
@@ -145,3 +171,27 @@ def run_backfill(body: BackfillRequest, db: Session = Depends(get_db)):
         from fastapi import HTTPException
         raise HTTPException(422, "end must be after start")
     return backfill(db, body.symbol, body.start, body.end, body.apply)
+
+
+@router.get("/wave3-ha/signals")
+def wave3_ha_signals(symbol: str | None = FilterSymbol, variant: str | None = Query(None, pattern="^(A|B)$"), limit: int = Query(500, ge=1, le=2000), db: Session = Depends(get_db)):
+    query = select(Wave3HAResearchSignal)
+    if symbol:
+        from app.models import Symbol
+        query = query.join(Symbol, Symbol.id == Wave3HAResearchSignal.symbol_id).where(Symbol.symbol == symbol.upper())
+    if variant:
+        query = query.where(Wave3HAResearchSignal.variant == variant)
+    return list(db.scalars(query.order_by(Wave3HAResearchSignal.decision_time.desc()).limit(limit)))
+
+
+@router.get("/wave3-ha/components")
+def wave3_ha_components(symbol: str | None = FilterSymbol, variant: str | None = Query(None, pattern="^(A|B)$"), db: Session = Depends(get_db)):
+    query = select(Wave3HAResearchSignal)
+    if symbol:
+        from app.models import Symbol
+        query = query.join(Symbol, Symbol.id == Wave3HAResearchSignal.symbol_id).where(Symbol.symbol == symbol.upper())
+    if variant:
+        query = query.where(Wave3HAResearchSignal.variant == variant)
+    rows = list(db.scalars(query))
+    names = sorted({name for row in rows for name in row.score_components_json})
+    return [{"component": name, **research_stats([row for row in rows if row.score_components_json.get(name, 0) > 0])} for name in names]

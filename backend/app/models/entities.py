@@ -562,6 +562,44 @@ class BacktestTrade(Base):
     )
 
 
+class Wave3HAResearchSignal(Base, TimestampMixin):
+    """Auditable research output; deliberately has no execution-order relationship."""
+    __tablename__ = "wave3_ha_research_signals"
+    __table_args__ = (
+        UniqueConstraint("event_fingerprint", "variant", name="uq_wave3_ha_event_variant"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    backtest_run_id: Mapped[int | None] = mapped_column(ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=True, index=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    strategy: Mapped[str] = mapped_column(String(64), default="elliott_wave3_heikin_ashi_reversal", index=True)
+    variant: Mapped[str] = mapped_column(String(1), index=True)
+    direction: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    event_fingerprint: Mapped[str] = mapped_column(String(128), index=True)
+    decision_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    elliott_count_id: Mapped[int] = mapped_column(ForeignKey("elliott_wave_counts.id", ondelete="RESTRICT"), index=True)
+    wave_point_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list)
+    artifact_ids_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    score: Mapped[Decimal] = mapped_column(Numeric(8, 4), index=True)
+    score_components_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    audit_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    reversal_candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id", ondelete="RESTRICT"))
+    confirmation_candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id", ondelete="RESTRICT"))
+    exit_ha_candle_id: Mapped[int | None] = mapped_column(ForeignKey("candles.id", ondelete="SET NULL"), nullable=True)
+    real_entry: Mapped[Decimal] = mapped_column(price_type)
+    real_stop: Mapped[Decimal] = mapped_column(price_type)
+    real_exit: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    realized_r: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    mfe_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    mae_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    holding_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    volatility_regime: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    market_data_source: Mapped[str] = mapped_column(String(64), default="binance_production_spot_db")
+    live_auto_execution_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class PaperAccount(Base, TimestampMixin):
     __tablename__ = "paper_accounts"
     id: Mapped[int] = mapped_column(primary_key=True)

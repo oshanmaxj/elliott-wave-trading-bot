@@ -451,6 +451,13 @@ class RuntimeSettings(BaseModel):
     elliott_allow_zigzag_truncation: bool = False
     elliott_minimum_confidence: float = Field(55, ge=0, le=100)
     elliott_wave_5_risk_factor: float = Field(0.6, ge=0.1, le=1)
+    ha_pullback_min_candles: int = Field(2, ge=2, le=10)
+    ha_wick_body_max_ratio: float = Field(0.25, ge=0, le=2)
+    ha_body_atr_min_ratio: float = Field(0.25, ge=0, le=5)
+    ha_confirmation_required: bool = True
+    wave3_ha_research_score_threshold: int = Field(70, ge=0, le=100)
+    wave3_ha_max_stop_atr_ratio: float = Field(3, gt=0, le=20)
+    wave3_ha_live_auto_execution_enabled: bool = Field(False)
 
     @field_validator("enabled_symbols")
     @classmethod
