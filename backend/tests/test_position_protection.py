@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.execution.protection import SpotProtectionService
 from app.models import (
+    BotRuntimeState,
     ExecutionEvent,
     LivePosition,
     ProtectiveOrder,
@@ -514,3 +515,60 @@ async def test_reconcile_detects_filled_take_profit_leg_and_advances_stage(
             )
         )
         assert bracket.status == "closed"
+
+
+@pytest.mark.asyncio
+async def test_establish_uses_custom_tp_fractions_from_risk_config_when_valid(
+    session_factory, monkeypatch
+):
+    position_id = seed(session_factory, quantity=Decimal("10"))
+    with session_factory.begin() as db:
+        db.add(
+            BotRuntimeState(
+                risk_config_json={"tp1_pct": "50", "tp2_pct": "30", "tp3_pct": "20"}
+            )
+        )
+    protection_service = service(session_factory, monkeypatch)
+    ProtectionClient.available = Decimal("10")
+    result = await protection_service.establish(position_id)
+    assert result["protected"], result
+    assert ProtectionClient.submitted["quantity"] == "5"
+    assert ProtectionClient.guard_submitted is not None
+    assert ProtectionClient.guard_submitted["quantity"] == "5"
+    with session_factory() as db:
+        event = db.scalar(
+            select(ExecutionEvent).where(
+                ExecutionEvent.event_type == "tp_fraction_config_invalid"
+            )
+        )
+        assert event is None
+
+
+@pytest.mark.asyncio
+async def test_establish_falls_back_to_paper_forward_fractions_when_percentages_invalid(
+    session_factory, monkeypatch
+):
+    position_id = seed(session_factory, quantity=Decimal("10"))
+    with session_factory.begin() as db:
+        db.add(
+            BotRuntimeState(
+                risk_config_json={"tp1_pct": "50", "tp2_pct": "30", "tp3_pct": "30"}
+            )
+        )
+    protection_service = service(session_factory, monkeypatch)
+    ProtectionClient.available = Decimal("10")
+    result = await protection_service.establish(position_id)
+    assert result["protected"], result
+    # Falls back to paper_forward.TP_FRACTIONS (30/40/30) since 50+30+30 != 100.
+    assert ProtectionClient.submitted["quantity"] == "3"
+    assert ProtectionClient.guard_submitted is not None
+    assert ProtectionClient.guard_submitted["quantity"] == "7"
+    with session_factory() as db:
+        event = db.scalar(
+            select(ExecutionEvent).where(
+                ExecutionEvent.event_type == "tp_fraction_config_invalid"
+            )
+        )
+        assert event is not None
+        assert event.severity == "WARNING"
+        assert event.metadata_json["reason"] == "tp_fraction_config_not_100_pct"

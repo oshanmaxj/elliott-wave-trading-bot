@@ -169,6 +169,77 @@ def test_control_state_transitions_resume_entries_without_clearing_kill_switch(
         assert transition.metadata_json["timestamp"]
 
 
+def test_risk_config_rejects_tp_percentages_that_do_not_sum_to_100(
+    session_factory, monkeypatch
+):
+    api = make_client(session_factory, monkeypatch)
+    login(api)
+    headers = csrf(api)
+    response = api.put(
+        "/api/bot/config",
+        headers=headers,
+        json={
+            "risk_config_json": {
+                "risk_per_trade_pct": "0.25",
+                "tp1_pct": "50",
+                "tp2_pct": "30",
+                "tp3_pct": "30",
+            }
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "tp_percentages_must_sum_to_100"
+
+
+def test_risk_config_rejects_non_positive_max_open_positions(
+    session_factory, monkeypatch
+):
+    api = make_client(session_factory, monkeypatch)
+    login(api)
+    headers = csrf(api)
+    response = api.put(
+        "/api/bot/config",
+        headers=headers,
+        json={"risk_config_json": {"max_open_positions": 0}},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "max_open_positions_must_be_a_positive_integer"
+
+
+def test_risk_config_rejects_out_of_range_percentage(session_factory, monkeypatch):
+    api = make_client(session_factory, monkeypatch)
+    login(api)
+    headers = csrf(api)
+    response = api.put(
+        "/api/bot/config",
+        headers=headers,
+        json={"risk_config_json": {"risk_per_trade_pct": "150"}},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "risk_per_trade_pct_must_be_between_0_and_100"
+
+
+def test_risk_config_accepts_valid_payload(session_factory, monkeypatch):
+    api = make_client(session_factory, monkeypatch)
+    login(api)
+    headers = csrf(api)
+    response = api.put(
+        "/api/bot/config",
+        headers=headers,
+        json={
+            "risk_config_json": {
+                "risk_per_trade_pct": "0.5",
+                "max_open_positions": 2,
+                "tp1_pct": "40",
+                "tp2_pct": "30",
+                "tp3_pct": "30",
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["risk_config_json"]["max_open_positions"] == 2
+
+
 def test_resumed_runtime_is_automatically_routable(session_factory, monkeypatch):
     api = make_client(session_factory, monkeypatch)
     login(api)

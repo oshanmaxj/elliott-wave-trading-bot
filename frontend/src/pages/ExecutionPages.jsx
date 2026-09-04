@@ -16,4 +16,69 @@ export function BotStrategies(){const s=useLoad('/bot/strategies',[]),cfg=useLoa
 export function ActiveTrades(){const p=useLoad('/execution/positions',[]),o=useLoad('/execution/orders',[]),q=useLoad('/execution/approval-queue',[]),s=useLoad('/bot/status',{}),[detail,setDetail]=useState(null);const active=p.data.filter(x=>x.status!=='closed'),pending=o.data.filter(x=>!['FILLED','CANCELED','REJECTED','exchange_rejected'].includes(x.status));return <><Head title="Active Trades" sub="Actual persisted Binance positions and open orders." action={<button onClick={()=>{p.load();o.load();q.load()}}>Refresh from Binance</button>}/><Cards items={[["Open positions",active.length],["Open orders",pending.length],["Total invested",money(active.reduce((a,x)=>a+Number(x.average_entry)*Number(x.base_quantity),0))],["Unrealized PnL",money(active.reduce((a,x)=>a+Number(x.unrealized_pnl),0))],["Protected",active.filter(x=>x.stop_loss).length],["Unprotected",active.filter(x=>!x.stop_loss).length]]}/>{active.length?<div className="trade-cards">{active.map(x=><article key={x.id} onClick={()=>setDetail(x)}><div className="trade-top"><h3>Position #{x.id}</h3><Badge value={x.status}/></div>{!x.stop_loss&&<p className="critical">CRITICAL: Position does not currently have valid stop-loss protection.</p>}<dl className="trade-values"><dt>Average entry</dt><dd>{formatNumber(x.average_entry,8)}</dd><dt>Quantity</dt><dd>{formatNumber(x.remaining_quantity,8)}</dd><dt>Stop loss</dt><dd>{formatNumber(x.stop_loss,8)}</dd><dt>Unrealized PnL</dt><dd>{money(x.unrealized_pnl)}</dd></dl><div className="trade-progress"><i className="done">Entry</i><i className="done">Filled</i><i>TP1</i><i>TP2</i><i>TP3</i><i>Closed</i></div></article>)}</div>:<Empty>The bot currently has no open Binance positions.</Empty>}{!s.data.manual_approval_required&&<section className="panel bot-section"><h3>{pending.length?'Executing / Execution Pending':'Automatic Testnet Execution'}</h3>{pending.length?<div className="trade-cards">{pending.map(x=><article key={x.id}><div className="trade-top"><strong>Order #{x.id}</strong><Badge value={x.execution_state||x.status}/></div><p>{x.side} · {formatNumber(x.requested_quantity,8)} · {x.client_order_id}</p></article>)}</div>:<Empty>No Testnet orders are currently pending execution.</Empty>}</section>}<ApprovalPanel rows={q.data} manual={s.data.manual_approval_required} refresh={q.load}/>{detail&&<TradeDrawer trade={detail} close={()=>setDetail(null)}/>}</>}
 const TradeDrawer=({trade,close})=><div className="drawer-backdrop" onClick={close}><aside className="trade-drawer" onClick={e=>e.stopPropagation()}><button onClick={close}>Close</button><p className="eyebrow">TRADE DETAILS</p><h2>Position #{trade.id}</h2><Badge value={trade.status}/><h3>Execution</h3><dl className="config-list">{Object.entries(trade).filter(([k])=>!['raw_status_json'].includes(k)).map(([k,v])=><><dt>{label(k)}</dt><dd>{formatDisplayValue(v)}</dd></>)}</dl><h3>Decision explanation</h3><p>This position originated from deterministic setup #{trade.originating_trade_setup_id}. Review execution events for each risk and exchange decision.</p></aside></div>
 export function TradeHistory(){const h=useLoad('/bot/trade-history',[]);const exportCsv=()=>{const rows=h.data;if(!rows.length)return;const csv=[Object.keys(rows[0]).join(','),...rows.map(x=>Object.values(x).map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(','))].join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='wavescope-trades.csv';a.click()};return <><Head title="Trade History" sub="Completed Binance Spot trades, fees and realized performance." action={<button onClick={exportCsv}>Export CSV</button>}/><Cards items={[["Total trades",h.data.length],["Wins",h.data.filter(x=>Number(x.realized_pnl)>0).length],["Losses",h.data.filter(x=>Number(x.realized_pnl)<0).length],["Net profit",money(h.data.reduce((a,x)=>a+Number(x.realized_pnl),0))],["Binance fees",money(h.data.reduce((a,x)=>a+Number(x.total_fees),0))]]}/>{h.data.length?<div className="panel table-wrap"><table><thead><tr><th>Opened</th><th>Closed</th><th>Direction</th><th>Entry</th><th>Quantity</th><th>Net PnL</th><th>Fees</th><th>Environment</th></tr></thead><tbody>{h.data.map(x=><tr key={x.id}><td>{formatDisplayValue(x.opened_at)}</td><td>{formatDisplayValue(x.closed_at)}</td><td>{x.direction}</td><td>{formatNumber(x.average_entry,8)}</td><td>{formatNumber(x.base_quantity,8)}</td><td>{money(x.realized_pnl)}</td><td>{money(x.total_fees)}</td><td>{x.environment}</td></tr>)}</tbody></table></div>:<Empty>No completed Binance trades yet. Closed positions will appear here with fee-adjusted PnL.</Empty>}</>}
-export function RiskSettings(){const c=useLoad('/bot/config',{}),risk=c.data.risk_config_json||{};const set=(k,v)=>c.setData({...c.data,risk_config_json:{...risk,[k]:v}});const fields=[['risk_per_trade_pct','Risk per trade %'],['daily_loss_pct','Maximum daily loss %'],['weekly_loss_pct','Maximum weekly loss %'],['max_drawdown_pct','Maximum drawdown %'],['max_open_positions','Maximum simultaneous positions'],['max_symbol_exposure_pct','Maximum symbol exposure %'],['max_total_exposure_pct','Maximum total exposure %'],['minimum_confidence','Minimum confidence'],['minimum_rr','Minimum reward-to-risk'],['tp1_pct','TP1 percentage'],['tp2_pct','TP2 percentage'],['tp3_pct','TP3 percentage']];const save=()=>api.put('/bot/config',c.data);const example=10000*Number(risk.risk_per_trade_pct||0)/100;return <><Head title="Risk Settings" sub="Practical hard limits applied before every Binance submission." action={<button className="primary" onClick={save}>Save Risk Settings</button>}/><div className="bot-grid"><section className="panel bot-form"><h3>Main risk configuration</h3><div className="risk-grid">{fields.map(([k,n])=><label key={k}>{n}<input type="number" min="0" step="0.01" value={risk[k]||''} onChange={e=>set(k,e.target.value)}/></label>)}</div></section><section className="panel bot-section risk-example"><p className="eyebrow">ESTIMATED DOLLAR RISK</p><h2>{money(example)}</h2><p>Account equity example: $10,000</p><p>Risk per trade: {risk.risk_per_trade_pct||0}%</p><p>Maximum estimated loss per trade: {money(example)}</p></section></div><section className="panel bot-section"><h3>Safety controls</h3><div className="switch-row"><label className="switch"><input type="checkbox" checked={!!c.data.manual_approval_required} onChange={()=>c.setData({...c.data,manual_approval_required:!c.data.manual_approval_required})}/><span/>Require manual approval</label><label className="switch"><input type="checkbox" checked={!!c.data.pause_new_entries} onChange={()=>c.setData({...c.data,pause_new_entries:!c.data.pause_new_entries})}/><span/>Pause new entries</label></div><div className="execution-banner danger"><strong>Production execution locked</strong><span>Emergency stop never liquidates all holdings automatically.</span></div></section></>}
+const RISK_GROUPS=[
+  ['Per-trade risk',[['risk_per_trade_pct','Risk per trade %'],['minimum_confidence','Minimum confidence'],['minimum_rr','Minimum reward-to-risk']]],
+  ['Portfolio limits',[['max_open_positions','Maximum simultaneous positions'],['max_symbol_exposure_pct','Maximum symbol exposure %'],['max_total_exposure_pct','Maximum total exposure %']]],
+  ['Loss limits',[['daily_loss_pct','Maximum daily loss %'],['weekly_loss_pct','Maximum weekly loss %',true],['max_drawdown_pct','Maximum drawdown %',true]]],
+  ['Take-profit split',[['tp1_pct','TP1 percentage'],['tp2_pct','TP2 percentage'],['tp3_pct','TP3 percentage']]],
+]
+const RISK_PCT_FIELDS=['risk_per_trade_pct','daily_loss_pct','weekly_loss_pct','max_drawdown_pct','max_symbol_exposure_pct','max_total_exposure_pct','minimum_confidence','tp1_pct','tp2_pct','tp3_pct']
+const TP_FIELDS=['tp1_pct','tp2_pct','tp3_pct']
+const riskFieldError=(key,value)=>{
+  if(value===''||value===undefined||value===null)return ''
+  const n=Number(value)
+  if(Number.isNaN(n))return 'Must be a number'
+  if(key==='max_open_positions')return Number.isInteger(n)&&n>0?'':'Must be a positive integer'
+  if(RISK_PCT_FIELDS.includes(key))return n>=0&&n<=100?'':'Must be 0-100'
+  if(key==='minimum_rr')return n>=0?'':'Must be positive'
+  return ''
+}
+export function RiskSettings(){
+  const c=useLoad('/bot/config',{}),bal=useLoad('/binance/balances',[])
+  const [saveError,setSaveError]=useState('')
+  const risk=c.data.risk_config_json||{}
+  const set=(k,v)=>{setSaveError('');c.setData({...c.data,risk_config_json:{...risk,[k]:v}})}
+  const errors=Object.fromEntries([...RISK_GROUPS.flatMap(([,fs])=>fs.map(([k])=>k)),'max_open_positions'].map(k=>[k,riskFieldError(k,risk[k])]))
+  const tpTotal=TP_FIELDS.reduce((a,k)=>a+Number(risk[k]||0),0)
+  const tpValid=Math.abs(tpTotal-100)<=0.5
+  const hasErrors=Object.values(errors).some(Boolean)||!tpValid
+  const save=async()=>{setSaveError('');try{await api.put('/bot/config',c.data);c.load()}catch(e){const d=e.response?.data?.detail;setSaveError(typeof d==='string'?label(d):d?.message||'Save failed')}}
+  const equity=Number(bal.data.find(x=>x.asset==='USDT')?.available||0)
+  const example=equity*Number(risk.risk_per_trade_pct||0)/100
+  return <><Head title="Risk Settings" sub="Practical hard limits applied before every Binance submission." action={<button className="primary" disabled={hasErrors} onClick={save}>Save Risk Settings</button>}/>
+    {saveError&&<div className="alert">{saveError}</div>}
+    <div className="bot-grid">
+      <section className="panel bot-form">
+        <h3>Main risk configuration</h3>
+        <div className="risk-groups">
+          {RISK_GROUPS.map(([title,fs])=><div className="risk-group" key={title}>
+            <h4>{title}</h4>
+            <div className="risk-grid">
+              {fs.map(([k,n,unenforced])=><label key={k} className={errors[k]?'field-error':''}>
+                {n}{unenforced&&<span className="bot-badge muted">not yet enforced</span>}
+                <input type="number" min="0" step="0.01" value={risk[k]||''} onChange={e=>set(k,e.target.value)}/>
+                {errors[k]&&<small>{errors[k]}</small>}
+              </label>)}
+            </div>
+            {title==='Take-profit split'&&<p className={`tp-total${tpValid?'':' invalid'}`}>Total: {tpTotal.toFixed(2)}%{!tpValid?' — must sum to 100%':''}</p>}
+          </div>)}
+        </div>
+      </section>
+      <section className="panel bot-section risk-example">
+        <p className="eyebrow">ESTIMATED DOLLAR RISK</p>
+        <h2>{money(example)}</h2>
+        <p>Account equity (Testnet USDT): {bal.error?'Not connected to Binance Testnet':money(equity)}</p>
+        <p>Risk per trade: {risk.risk_per_trade_pct||0}%</p>
+        <p>Maximum estimated loss per trade: {money(example)}</p>
+      </section>
+    </div>
+    <section className="panel bot-section">
+      <h3>Safety controls</h3>
+      <div className="switch-row">
+        <label className="switch"><input type="checkbox" checked={!!c.data.manual_approval_required} onChange={()=>c.setData({...c.data,manual_approval_required:!c.data.manual_approval_required})}/><span/>Require manual approval</label>
+        <label className="switch"><input type="checkbox" checked={!!c.data.pause_new_entries} onChange={()=>c.setData({...c.data,pause_new_entries:!c.data.pause_new_entries})}/><span/>Pause new entries</label>
+      </div>
+      <div className="execution-banner danger"><strong>Production execution locked</strong><span>Emergency stop never liquidates all holdings automatically.</span></div>
+    </section>
+  </>
+}

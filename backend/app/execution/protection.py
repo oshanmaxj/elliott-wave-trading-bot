@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -15,6 +15,7 @@ from app.execution.filters import (
     serialize_quantity,
     validate_notional,
 )
+from app.execution.runtime import runtime_state
 from app.models import (
     ExecutionEvent,
     ExecutionOrder,
@@ -25,6 +26,8 @@ from app.models import (
 )
 from app.trading.paper_forward import TP_FRACTIONS
 
+TP_FRACTION_SUM_TOLERANCE = Decimal("0.5")
+
 
 def ordered_targets(setup) -> list[tuple[int, Decimal]]:
     """Return the setup's non-null take-profit targets in order, e.g. [(1, tp1), (2, tp2)]."""
@@ -34,6 +37,31 @@ def ordered_targets(setup) -> list[tuple[int, Decimal]]:
         if value is not None:
             targets.append((number, value))
     return targets
+
+
+def resolve_tp_fractions(runtime) -> tuple[dict[int, Decimal], bool, str | None]:
+    """Build per-account TP1/TP2/TP3 slice fractions from risk_config_json.
+
+    Falls back to the paper-forward simulator's fixed 30/40/30 baseline
+    (`app.trading.paper_forward.TP_FRACTIONS`) whenever the account's
+    tp1_pct/tp2_pct/tp3_pct are missing, unparsable, or don't sum to ~100 —
+    live and paper-forward can diverge once an account sets a valid custom
+    split, which is intentional.
+    """
+    raw = (runtime.risk_config_json if runtime else {}) or {}
+    try:
+        tp1 = Decimal(str(raw.get("tp1_pct", "")))
+        tp2 = Decimal(str(raw.get("tp2_pct", "")))
+        tp3 = Decimal(str(raw.get("tp3_pct", "")))
+    except (InvalidOperation, TypeError, ValueError):
+        return dict(TP_FRACTIONS), True, "tp_fraction_config_unparsable"
+    total = tp1 + tp2 + tp3
+    if abs(total - Decimal("100")) > TP_FRACTION_SUM_TOLERANCE:
+        return dict(TP_FRACTIONS), True, "tp_fraction_config_not_100_pct"
+    if tp1 < 0 or tp2 < 0 or tp3 < 0:
+        return dict(TP_FRACTIONS), True, "tp_fraction_config_negative"
+    hundred = Decimal("100")
+    return {1: tp1 / hundred, 2: tp2 / hundred, 3: tp3 / hundred}, False, None
 
 
 class SpotProtectionService:
@@ -193,6 +221,9 @@ class SpotProtectionService:
                 stage = position.protection_stage
                 multi_target = len(remaining_targets) > 1
                 symbol_name = symbol.symbol
+                tp_fractions, tp_fallback_used, tp_fallback_reason = resolve_tp_fractions(
+                    runtime_state(db)
+                )
             client = self.client_factory(execution_settings)
             info = (await client.exchange_info(symbol_name))["symbols"][0]
             account = await client.account()
@@ -229,7 +260,7 @@ class SpotProtectionService:
             guard_quantity = Decimal("0")
             if multi_target:
                 slice_qty = floor_quantity_to_step(
-                    min(sellable, Decimal(position.base_quantity) * TP_FRACTIONS[target_number]),
+                    min(sellable, Decimal(position.base_quantity) * tp_fractions[target_number]),
                     step,
                 )
                 remainder_qty = floor_quantity_to_step(sellable - slice_qty, step)
@@ -307,6 +338,21 @@ class SpotProtectionService:
                     protection=protection,
                     metadata={"attempted_parameters": params},
                 )
+                if tp_fallback_used and multi_target:
+                    self._event(
+                        db,
+                        "tp_fraction_config_invalid",
+                        position,
+                        symbol,
+                        severity="WARNING",
+                        protection=protection,
+                        reason=tp_fallback_reason,
+                        metadata={
+                            "fallback_fractions": {
+                                k: str(v) for k, v in TP_FRACTIONS.items()
+                            }
+                        },
+                    )
                 protection_id = protection.id
             response = await client.place_oco_order(params)
             with self.session_factory.begin() as db:

@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import time
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -57,6 +57,54 @@ STRATEGIES = [
 
 
 require = require_roles
+
+RISK_CONFIG_PCT_FIELDS = (
+    "risk_per_trade_pct",
+    "daily_loss_pct",
+    "weekly_loss_pct",
+    "max_drawdown_pct",
+    "max_symbol_exposure_pct",
+    "max_total_exposure_pct",
+    "tp1_pct",
+    "tp2_pct",
+    "tp3_pct",
+    "minimum_confidence",
+)
+TP_PCT_FIELDS = ("tp1_pct", "tp2_pct", "tp3_pct")
+TP_SUM_TOLERANCE = Decimal("0.5")
+
+
+def _positive_int(raw) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    if isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
+        value = int(raw)
+        return value if value > 0 else None
+    return None
+
+
+def validate_risk_config(risk_config_json) -> None:
+    """Reject a risk_config_json payload before it can affect live order submission."""
+    if not isinstance(risk_config_json, dict):
+        raise HTTPException(422, "risk_config_json_must_be_an_object")
+    for field in RISK_CONFIG_PCT_FIELDS:
+        if field not in risk_config_json:
+            continue
+        try:
+            value = Decimal(str(risk_config_json[field]))
+        except (InvalidOperation, TypeError, ValueError):
+            raise HTTPException(422, f"{field}_must_be_a_number")
+        if not (Decimal("0") <= value <= Decimal("100")):
+            raise HTTPException(422, f"{field}_must_be_between_0_and_100")
+    if "max_open_positions" in risk_config_json:
+        if _positive_int(risk_config_json["max_open_positions"]) is None:
+            raise HTTPException(422, "max_open_positions_must_be_a_positive_integer")
+    if all(field in risk_config_json for field in TP_PCT_FIELDS):
+        total = sum(Decimal(str(risk_config_json[field])) for field in TP_PCT_FIELDS)
+        if abs(total - Decimal("100")) > TP_SUM_TOLERANCE:
+            raise HTTPException(422, "tp_percentages_must_sum_to_100")
 
 
 def state(db):
@@ -136,6 +184,8 @@ def get_config(db: Session = Depends(get_db)):
 def put_config(
     body: dict, db: Session = Depends(get_db), current=Depends(require("admin"))
 ):
+    if "risk_config_json" in body:
+        validate_risk_config(body["risk_config_json"])
     row = state(db)
     previous = control_snapshot(row)
     for key in (

@@ -13,6 +13,7 @@ from app.execution.runtime import runtime_state
 from app.execution.service import (
     ExecutionRiskEngine,
     client_order_id,
+    risk_config,
     setup_fingerprint,
 )
 from app.execution.strategies import originating_runtime_strategy
@@ -157,7 +158,7 @@ class AutomaticTestnetExecutor:
         )
         if ledger and ledger.kill_switch_triggered:
             reasons.append("kill_switch_enabled")
-        if ledger and ledger.loss_pct >= self.settings.max_daily_loss_pct:
+        if ledger and ledger.loss_pct >= risk_config(db, self.settings)["daily_loss_pct"]:
             reasons.append("daily_loss_limit")
         return list(dict.fromkeys(reasons))
 
