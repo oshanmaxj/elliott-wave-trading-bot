@@ -339,6 +339,11 @@ class BinanceUserStreamService:
         await broadcaster.broadcast("execution_balance_update", safe)
 
     async def _process_order(self, event):
+        no_managed_order = False
+        advance_position_id = None
+        position_id = None
+        payload = None
+        fill_added = False
         with self.session_factory() as db:
             order = db.scalar(
                 select(ExecutionOrder).where(
@@ -346,6 +351,7 @@ class BinanceUserStreamService:
                 )
             )
             if not order:
+                no_managed_order = True
                 protection = db.scalar(
                     select(ProtectiveOrder).where(
                         (ProtectiveOrder.stop_client_order_id == event["client_order_id"])
@@ -353,96 +359,104 @@ class BinanceUserStreamService:
                     )
                 )
                 if protection:
-                    self._process_protective_order(db, protection, event)
+                    advance_position_id = self._process_protective_order(db, protection, event)
                     db.commit()
-                    return
+                else:
+                    db.add(
+                        ExecutionEvent(
+                            severity="INFO",
+                            event_type="user_stream_external_order_ignored",
+                            exchange="binance",
+                            environment="testnet",
+                            message="Ignored order update not managed by WaveScope",
+                            metadata_json={
+                                "symbol": event["symbol"],
+                                "status": event["status"],
+                            },
+                        )
+                    )
+                    db.commit()
+            else:
+                order.exchange_order_id = (
+                    event["exchange_order_id"] or order.exchange_order_id
+                )
+                order.executed_quantity = event["cumulative_quantity"]
+                order.quote_quantity = event["cumulative_quote"]
+                order.status = event["status"]
+                order.execution_state = STATUS_MAP.get(
+                    event["status"], event["status"].lower()
+                )
+                order.raw_status_json = event["raw"]
+                if event["cumulative_quantity"] > 0:
+                    order.average_fill_price = (
+                        event["cumulative_quote"] / event["cumulative_quantity"]
+                    )
+                now = (
+                    event["transaction_time"]
+                    or event["event_time"]
+                    or datetime.now(timezone.utc)
+                )
+                if event["status"] == "FILLED":
+                    order.filled_at = now
+                elif event["status"] == "CANCELED":
+                    order.canceled_at = now
+                if event["trade_id"] and event["last_quantity"] > 0:
+                    fill = ExecutionFill(
+                        execution_order_id=order.id,
+                        exchange_trade_id=event["trade_id"],
+                        price=event["last_price"],
+                        quantity=event["last_quantity"],
+                        quote_quantity=event["last_price"] * event["last_quantity"],
+                        commission=event["commission"],
+                        commission_asset=event["commission_asset"] or "",
+                        filled_at=now,
+                    )
+                    db.add(fill)
+                    try:
+                        db.flush()
+                        fill_added = True
+                    except IntegrityError:
+                        db.rollback()
+                        return
+                if fill_added:
+                    position_id = self._update_position(db, order, event, now)
                 db.add(
                     ExecutionEvent(
                         severity="INFO",
-                        event_type="user_stream_external_order_ignored",
+                        event_type="execution_filled" if event["status"] == "FILLED" else "user_stream_order_update",
                         exchange="binance",
-                        environment="testnet",
-                        message="Ignored order update not managed by WaveScope",
+                        environment=order.environment,
+                        symbol_id=order.symbol_id,
+                        trade_setup_id=order.trade_setup_id,
+                        execution_order_id=order.id,
+                        message=f"Managed order updated to {event['status']}",
                         metadata_json={
-                            "symbol": event["symbol"],
                             "status": event["status"],
+                            "execution_type": event["execution_type"],
                         },
                     )
                 )
                 db.commit()
-                return
-            order.exchange_order_id = (
-                event["exchange_order_id"] or order.exchange_order_id
-            )
-            order.executed_quantity = event["cumulative_quantity"]
-            order.quote_quantity = event["cumulative_quote"]
-            order.status = event["status"]
-            order.execution_state = STATUS_MAP.get(
-                event["status"], event["status"].lower()
-            )
-            order.raw_status_json = event["raw"]
-            if event["cumulative_quantity"] > 0:
-                order.average_fill_price = (
-                    event["cumulative_quote"] / event["cumulative_quantity"]
-                )
-            now = (
-                event["transaction_time"]
-                or event["event_time"]
-                or datetime.now(timezone.utc)
-            )
-            if event["status"] == "FILLED":
-                order.filled_at = now
-            elif event["status"] == "CANCELED":
-                order.canceled_at = now
-            fill_added = False
-            if event["trade_id"] and event["last_quantity"] > 0:
-                fill = ExecutionFill(
-                    execution_order_id=order.id,
-                    exchange_trade_id=event["trade_id"],
-                    price=event["last_price"],
-                    quantity=event["last_quantity"],
-                    quote_quantity=event["last_price"] * event["last_quantity"],
-                    commission=event["commission"],
-                    commission_asset=event["commission_asset"] or "",
-                    filled_at=now,
-                )
-                db.add(fill)
-                try:
-                    db.flush()
-                    fill_added = True
-                except IntegrityError:
-                    db.rollback()
-                    return
-            position_id = None
-            if fill_added:
-                position_id = self._update_position(db, order, event, now)
-            db.add(
-                ExecutionEvent(
-                    severity="INFO",
-                    event_type="execution_filled" if event["status"] == "FILLED" else "user_stream_order_update",
-                    exchange="binance",
-                    environment=order.environment,
-                    symbol_id=order.symbol_id,
-                    trade_setup_id=order.trade_setup_id,
-                    execution_order_id=order.id,
-                    message=f"Managed order updated to {event['status']}",
-                    metadata_json={
-                        "status": event["status"],
-                        "execution_type": event["execution_type"],
-                    },
-                )
-            )
-            db.commit()
-            payload = {
-                "order_id": order.id,
-                "client_order_id": order.client_order_id,
-                "status": order.status,
-                "execution_state": order.execution_state,
-                "executed_quantity": str(order.executed_quantity),
-                "average_fill_price": str(order.average_fill_price)
-                if order.average_fill_price is not None
-                else None,
-            }
+                payload = {
+                    "order_id": order.id,
+                    "client_order_id": order.client_order_id,
+                    "status": order.status,
+                    "execution_state": order.execution_state,
+                    "executed_quantity": str(order.executed_quantity),
+                    "average_fill_price": str(order.average_fill_price)
+                    if order.average_fill_price is not None
+                    else None,
+                }
+
+        if no_managed_order:
+            if advance_position_id:
+                from app.execution.protection import SpotProtectionService
+
+                await SpotProtectionService(
+                    session_factory=self.session_factory
+                ).advance_stage(advance_position_id)
+            return
+
         log_event(
             "INFO",
             "execution",
@@ -550,6 +564,7 @@ class BinanceUserStreamService:
             position.realized_pnl += (event["last_price"] - position.average_entry) * sold - quote_fee
             position.total_fees += quote_fee
             position.remaining_quantity -= sold
+        advance_position_id = None
         if event["status"] == "FILLED":
             protection.status = "closed"
             protection.closed_at = now
@@ -563,6 +578,8 @@ class BinanceUserStreamService:
             else:
                 position.status = "partially_closed"
                 position.protection_status = "partially_protected"
+                if leg == "take_profit_1" and protection.role == "bracket":
+                    advance_position_id = position.id
             event_type, severity = "protection_exit_filled", "INFO"
         elif event["status"] in {"REJECTED", "EXPIRED"}:
             protection.status = "protection_failed"
@@ -594,6 +611,7 @@ class BinanceUserStreamService:
                 },
             )
         )
+        return advance_position_id
 
 
 user_stream = BinanceUserStreamService()

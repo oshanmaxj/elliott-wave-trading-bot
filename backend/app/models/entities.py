@@ -815,6 +815,24 @@ class LivePosition(Base, TimestampMixin):
     )
     exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     exit_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    protection_stage: Mapped[int] = mapped_column(Integer, default=0)
+    tp1_filled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    tp2_filled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    tp3_filled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    breakeven_moved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    max_favorable_excursion: Mapped[Decimal] = mapped_column(price_type, default=0)
+    max_adverse_excursion: Mapped[Decimal] = mapped_column(price_type, default=0)
+    mfe_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    mae_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    volatility_regime: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
 
 class ProtectiveOrder(Base, TimestampMixin):
@@ -832,14 +850,18 @@ class ProtectiveOrder(Base, TimestampMixin):
     stop_client_order_id: Mapped[str] = mapped_column(
         String(64), unique=True, index=True
     )
-    take_profit_client_order_id: Mapped[str] = mapped_column(
-        String(64), unique=True, index=True
+    take_profit_client_order_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
     )
     stop_exchange_order_id: Mapped[str | None] = mapped_column(String(64))
     take_profit_exchange_order_id: Mapped[str | None] = mapped_column(String(64))
     quantity: Mapped[Decimal] = mapped_column(price_type)
     stop_price: Mapped[Decimal] = mapped_column(price_type)
-    take_profit_price: Mapped[Decimal] = mapped_column(price_type)
+    take_profit_price: Mapped[Decimal | None] = mapped_column(
+        price_type, nullable=True
+    )
+    stage: Mapped[int] = mapped_column(Integer, default=0)
+    role: Mapped[str] = mapped_column(String(16), default="bracket")
     status: Mapped[str] = mapped_column(String(32), index=True)
     raw_status_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     rejection_reason: Mapped[str | None] = mapped_column(String(500))

@@ -10,6 +10,7 @@ from app.database.session import SessionLocal
 from app.execution.binance import BinanceSpotClient
 from app.execution.credentials import load_stored_settings
 from app.execution.positions import restore_setup_protection_levels
+from app.execution.protection import SpotProtectionService
 from app.models import ExecutionEvent, LivePosition, ProtectiveOrder, Symbol, TradeSetup
 
 ACTIVE_POSITION_STATUSES = ("open", "partially_closed")
@@ -42,6 +43,9 @@ class PositionReconciliationService:
         self.session_factory = session_factory
         self.client_factory = client_factory
         self.settings = settings or get_settings()
+        self._protection_service = SpotProtectionService(
+            session_factory, client_factory, self.settings
+        )
 
     def _client_settings(self):
         with self.session_factory() as db:
@@ -70,11 +74,20 @@ class PositionReconciliationService:
         finally:
             await client.close()
 
+    async def _ticker_price(self, client, symbol: str, cache: dict) -> Decimal | None:
+        if symbol not in cache:
+            try:
+                cache[symbol] = Decimal((await client.ticker_price(symbol))["price"])
+            except Exception:
+                cache[symbol] = None
+        return cache[symbol]
+
     async def reconcile_all(self) -> dict:
         configured = self._client_settings()
         client = self.client_factory(configured)
         now = datetime.now(timezone.utc)
         results = []
+        price_cache: dict[str, Decimal | None] = {}
         try:
             account = await client.account()
             balances = {row["asset"]: Decimal(row["free"]) + Decimal(row["locked"])
@@ -84,6 +97,7 @@ class PositionReconciliationService:
                     LivePosition.environment == "testnet",
                     LivePosition.status.in_(ACTIVE_POSITION_STATUSES))))
             for position_id in position_ids:
+                await self._protection_service.reconcile(position_id)
                 with self.session_factory() as db:
                     position = db.get(LivePosition, position_id)
                     symbol = db.get(Symbol, position.symbol_id)
@@ -100,20 +114,6 @@ class PositionReconciliationService:
                     remaining = min(previous_quantity, owned)
                     await client.open_orders(symbol.symbol)
                     await client.trades(symbol.symbol)  # verifies signed trade-history access
-                    protective_open = False
-                    if protection and protection.order_list_id:
-                        try:
-                            order_list = await client.get_order_list(protection.order_list_id)
-                            listed = {str(order.get("orderId")) for order in order_list.get("orders", [])}
-                            protective_open = (
-                                order_list.get("listOrderStatus") == "EXECUTING"
-                                and bool(protection.stop_exchange_order_id)
-                                and bool(protection.take_profit_exchange_order_id)
-                                and protection.stop_exchange_order_id in listed
-                                and protection.take_profit_exchange_order_id in listed
-                            )
-                        except Exception:
-                            protective_open = False
                     position.remaining_quantity = remaining
                     position.last_reconciled_at = now
                     if remaining == 0:
@@ -122,7 +122,27 @@ class PositionReconciliationService:
                         position.closed_at = now
                     else:
                         position.status = "partially_closed" if remaining < position.base_quantity else "open"
-                        position.protection_status = "protected" if protective_open else "unprotected"
+                        if protection is None:
+                            position.protection_status = "unprotected"
+                    if setup and setup.stop_loss is not None:
+                        price = await self._ticker_price(client, symbol.symbol, price_cache)
+                        if price is not None:
+                            distance = abs(Decimal(position.average_entry) - Decimal(setup.stop_loss))
+                            if distance > 0:
+                                favorable = (
+                                    (price - Decimal(position.average_entry))
+                                    if position.direction == "long"
+                                    else (Decimal(position.average_entry) - price)
+                                )
+                                adverse = -favorable
+                                position.max_favorable_excursion = max(
+                                    Decimal(position.max_favorable_excursion), favorable, Decimal("0")
+                                )
+                                position.max_adverse_excursion = max(
+                                    Decimal(position.max_adverse_excursion), adverse, Decimal("0")
+                                )
+                                position.mfe_r = position.max_favorable_excursion / distance
+                                position.mae_r = position.max_adverse_excursion / distance
                     db.add(ExecutionEvent(
                         severity="WARNING" if position.protection_status == "unprotected" else "INFO",
                         event_type="position_reconciled", exchange="binance", environment="testnet",
@@ -131,7 +151,7 @@ class PositionReconciliationService:
                         metadata_json={"previous_quantity": str(previous_quantity),
                                        "remaining_quantity": str(remaining),
                                        "account_base_balance": str(owned),
-                                       "protective_orders_open": protective_open,
+                                       "protective_orders_open": position.protection_status == "protected",
                                        "protection_levels_restored": protection_levels_restored,
                                        "status": position.status}))
                     db.commit()
