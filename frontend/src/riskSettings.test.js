@@ -25,7 +25,13 @@ test('take-profit split shows a running total that flags an invalid sum', () => 
 
 test('save is blocked while any field fails validation', () => {
   assert.match(source, /hasErrors=Object\.values\(errors\)\.some\(Boolean\)\|\|!tpValid/)
-  assert.match(source, /disabled=\{hasErrors\}/)
+  assert.match(source, /disabled=\{hasErrors\|\|busy\}/)
+})
+
+test('save shows a busy label while in flight and a success flash on completion', () => {
+  assert.match(source, /busy\?'Saving…':saved\?'Saved ✓':'Save Risk Settings'/)
+  assert.match(source, /className=\{`primary \$\{saved\?'success-flash':''\}`\}/)
+  assert.match(source, /setSaved\(true\);setTimeout\(\(\)=>setSaved\(false\),1500\)/)
 })
 
 test('the dollar-risk preview reuses the real Binance balances endpoint', () => {

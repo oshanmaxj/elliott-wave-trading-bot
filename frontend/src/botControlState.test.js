@@ -6,8 +6,16 @@ const source = readFileSync(new URL('./pages/ExecutionPages.jsx', import.meta.ur
 
 test('dashboard exposes an explicit canonical resume action', () => {
   assert.match(source, /act\('resume'\)/)
-  assert.match(source, />Resume New Entries</)
+  assert.match(source, /'Resume New Entries'/)
   assert.match(source, /x\.pause_new_entries&&x\.status==='running'/)
+})
+
+test('command buttons disable and show a busy label while an action is in flight', () => {
+  assert.match(source, /const \[busyAction,setBusyAction\]=useState\(null\)/)
+  assert.match(source, /disabled=\{!!busyAction\}/)
+  assert.match(source, /busyAction==='start'\?'Starting…'/)
+  assert.match(source, /setBusyAction\(action\);try\{/)
+  assert.match(source, /\}finally\{setBusyAction\(null\)\}/)
 })
 
 test('control actions immediately apply and then refresh canonical backend state', () => {
