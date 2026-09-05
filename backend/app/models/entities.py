@@ -600,6 +600,34 @@ class Wave3HAResearchSignal(Base, TimestampMixin):
     live_auto_execution_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class HeikinAshiTrendBreakSignal(Base, TimestampMixin):
+    """Auditable research output for the HA trend-break strategy; no execution-order relationship."""
+    __tablename__ = "heikin_ashi_trend_break_signals"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id", ondelete="CASCADE"), index=True)
+    strategy: Mapped[str] = mapped_column(String(64), default="heikin_ashi_trend_break", index=True)
+    direction: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(24), index=True)
+    event_fingerprint: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    decision_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    bearish_ref_candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id", ondelete="RESTRICT"))
+    bullish_ref_candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id", ondelete="RESTRICT"))
+    entry_ha_candle_id: Mapped[int] = mapped_column(ForeignKey("candles.id", ondelete="RESTRICT"))
+    exit_ha_candle_id: Mapped[int | None] = mapped_column(ForeignKey("candles.id", ondelete="SET NULL"), nullable=True)
+    real_entry: Mapped[Decimal] = mapped_column(price_type)
+    real_stop: Mapped[Decimal] = mapped_column(price_type)
+    real_exit: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    realized_r: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    mfe_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    mae_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
+    holding_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    volatility_regime: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    market_data_source: Mapped[str] = mapped_column(String(64), default="binance_production_spot_db")
+    live_auto_execution_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class PaperAccount(Base, TimestampMixin):
     __tablename__ = "paper_accounts"
     id: Mapped[int] = mapped_column(primary_key=True)
