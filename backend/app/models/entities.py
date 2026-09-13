@@ -712,6 +712,9 @@ class PaperForwardTrade(Base, TimestampMixin):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     exit_price: Mapped[Decimal | None] = mapped_column(price_type, nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    exit_signal_candle_id: Mapped[int | None] = mapped_column(
+        ForeignKey("candles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     realized_r: Mapped[Decimal] = mapped_column(Numeric(18, 6), default=0)
     realized_pnl: Mapped[Decimal] = mapped_column(price_type, default=0)
     fees: Mapped[Decimal] = mapped_column(price_type, default=0)

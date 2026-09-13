@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user, require_roles
 from app.database.session import get_db
-from app.models import PaperForwardTrade, Wave3HAResearchSignal
-from app.trading.paper_forward import backfill, comparison_rows
+from app.models import PaperForwardTrade, TradeSetup, Wave3HAResearchSignal
+from app.trading.paper_forward import WAVE3_HA_STRATEGY, backfill, comparison_rows
 
 router = APIRouter(prefix="/api/paper-forward", tags=["paper-forward"], dependencies=[Depends(current_user)])
 D = Decimal
@@ -171,6 +171,25 @@ def run_backfill(body: BackfillRequest, db: Session = Depends(get_db)):
         from fastapi import HTTPException
         raise HTTPException(422, "end must be after start")
     return backfill(db, body.symbol, body.start, body.end, body.apply)
+
+
+@router.get("/elliott-wave3-heikin-ashi/trades")
+def elliott_wave3_heikin_ashi_trades(symbol: str | None = FilterSymbol, limit: int = Query(500, ge=1, le=2000), db: Session = Depends(get_db)):
+    """Per-trade audit table for the isolated elliott_wave3_heikin_ashi strategy."""
+    query = select(PaperForwardTrade, TradeSetup.elliott_wave_count_id).join(
+        TradeSetup, TradeSetup.id == PaperForwardTrade.setup_id
+    ).where(PaperForwardTrade.strategy == WAVE3_HA_STRATEGY)
+    if symbol:
+        query = query.where(PaperForwardTrade.symbol == symbol.upper())
+    rows = db.execute(query.order_by(PaperForwardTrade.id.desc()).limit(limit)).all()
+    return [{
+        "setup_id": trade.setup_id, "symbol": trade.symbol, "wave_count_id": wave_count_id,
+        "direction": trade.direction, "status": trade.status, "confidence_score": trade.confidence_score,
+        "entry_timestamp": trade.opened_at, "entry_price": trade.simulated_entry, "stop_loss": trade.stop_loss,
+        "exit_timestamp": trade.closed_at, "exit_price": trade.exit_price, "exit_reason": trade.exit_reason,
+        "exit_signal_candle_id": trade.exit_signal_candle_id,
+        "realized_r": trade.realized_r, "mfe_r": trade.mfe_r, "mae_r": trade.mae_r,
+    } for trade, wave_count_id in rows]
 
 
 @router.get("/wave3-ha/signals")

@@ -50,6 +50,25 @@ export const sanitizeLinePoints = ({ points, overlayType, recordId, candles, req
   }).map(({ time, value }) => ({ time, value }))
 }
 
+// Visual-only Heikin Ashi candles for the Market Analysis chart toggle.
+// Same formula and deterministic chronological initialization as the
+// backend's app.strategies.heikin_ashi.derive_heikin_ashi - real open/high/
+// low/close are preserved on the returned objects (as _real*) so overlays
+// keep referencing genuine executable prices, never the synthetic HA body.
+export const deriveHeikinAshiCandles = candles => {
+  const sorted = [...candles].sort((a, b) => new Date(a.open_time) - new Date(b.open_time))
+  let previous = null
+  return sorted.map(candle => {
+    const open = Number(candle.open), high = Number(candle.high), low = Number(candle.low), close = Number(candle.close)
+    const haClose = (open + high + low + close) / 4
+    const haOpen = previous ? (previous.haOpen + previous.haClose) / 2 : (open + close) / 2
+    const haHigh = Math.max(high, haOpen, haClose)
+    const haLow = Math.min(low, haOpen, haClose)
+    previous = { haOpen, haClose }
+    return { ...candle, open: haOpen, high: haHigh, low: haLow, close: haClose, _realOpen: open, _realHigh: high, _realLow: low, _realClose: close }
+  })
+}
+
 export const chartRenderPlan = ({ raw, candles, waveCounts = [], activePositions = [], setups = [] }) => {
   const candleData = normalizeChartCandles(candles)
   if (raw) return { candleData, marketDataSeries: 1, overlaySeries: [], priceLines: [] }

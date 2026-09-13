@@ -4,7 +4,7 @@ import { normalizeChartCandles, reportRejectedCoordinate, sanitizeLinePoints, va
 
 const seconds = value => Math.floor(new Date(value).getTime() / 1000)
 
-export default function MarketChart({ chartKey, candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, activePositions = [], waveCounts, settings, onLoadOlder }) {
+export default function MarketChart({ chartKey, candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, activePositions = [], waveCounts, wave3haTrades = [], settings, onLoadOlder }) {
   const host = useRef(null)
   const loadingOlder = useRef(false)
 
@@ -143,13 +143,20 @@ export default function MarketChart({ chartKey, candles, swings, structure, fvg,
       ;[position.take_profit_1, position.take_profit_2, position.take_profit_3].forEach((target, index) => addPriceLine(target, { color: '#16a34a', lineWidth: 2, lineStyle: 1, axisLabelVisible: true, title: `${prefix} · TP${index + 1}` }, { ...meta, field: `take_profit_${index + 1}` }))
     })
 
+    if (settings.setups) wave3haTrades.forEach(trade => {
+      const prefix = `WAVE3-HA #${trade.setup_id}`; const meta = { overlay_type: 'wave3_heikin_ashi_trade', record_id: trade.setup_id }
+      addPriceLine(trade.entry_price, { color: '#38bdf8', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: `${prefix} ENTRY` }, { ...meta, field: 'entry_price' })
+      addPriceLine(trade.stop_loss, { color: '#dc2626', lineWidth: 2, lineStyle: 1, axisLabelVisible: true, title: `${prefix} HARD SL` }, { ...meta, field: 'stop_loss' })
+      if (trade.exit_price) addPriceLine(trade.exit_price, { color: trade.exit_reason === 'heikin_ashi_5m_reversal' ? '#facc15' : '#f87171', lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: `${prefix} EXIT · ${trade.exit_reason || ''}` }, { ...meta, field: 'exit_price' })
+    })
+
     chart.timeScale().fitContent()
     requestAnimationFrame(updateBands)
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(rangeHandler)
       cleanup(bands)
     }
-  }, [chartKey, candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, activePositions, waveCounts, settings, onLoadOlder])
+  }, [chartKey, candles, swings, structure, fvg, liquidity, orderBlocks, premiumDiscount, sweeps, setups, activePositions, waveCounts, wave3haTrades, settings, onLoadOlder])
 
   return <div className="chart" ref={host} />
 }

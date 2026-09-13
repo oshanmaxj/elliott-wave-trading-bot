@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { chartRenderPlan, normalizeChartCandles, sanitizeLinePoints } from './chartRendering.js'
+import { chartRenderPlan, deriveHeikinAshiCandles, normalizeChartCandles, sanitizeLinePoints } from './chartRendering.js'
 
 const candles = [
   { id: 1, open_time: '2026-08-18T00:00:00Z', open: '100', high: '110', low: '90', close: '105' },
@@ -59,6 +59,23 @@ test('overlay planning never mutates candle OHLC values', () => {
   chartRenderPlan({ raw: false, candles, waveCounts: [wave] })
   normalizeChartCandles(candles)
   assert.deepEqual(candles, before)
+})
+
+test('Heikin Ashi formula and deterministic chronological initialization', () => {
+  const real = [
+    { id: 1, open_time: '2026-08-18T00:00:00Z', open: '10', high: '14', low: '8', close: '12' },
+    { id: 2, open_time: '2026-08-18T00:01:00Z', open: '12', high: '15', low: '10', close: '14' },
+  ]
+  const ha = deriveHeikinAshiCandles(real)
+  assert.equal(ha[0].open, 11); assert.equal(ha[0].close, 11); assert.equal(ha[0].high, 14); assert.equal(ha[0].low, 8)
+  assert.equal(ha[1].open, 11); assert.equal(ha[1].close, 12.75); assert.equal(ha[1].high, 15); assert.equal(ha[1].low, 10)
+})
+
+test('Heikin Ashi candles never mutate the source real OHLC values', () => {
+  const real = [{ id: 1, open_time: '2026-08-18T00:00:00Z', open: '10', high: '14', low: '8', close: '12' }]
+  const before = structuredClone(real)
+  deriveHeikinAshiCandles(real)
+  assert.deepEqual(real, before)
 })
 
 test('MarketChart raw boundary precedes every overlay-construction API', () => {

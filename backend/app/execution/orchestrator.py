@@ -19,6 +19,7 @@ from app.execution.service import (
 from app.execution.strategies import originating_runtime_strategy
 from app.execution.reconciliation import ACTIVE_POSITION_STATUSES
 from app.execution.filters import quantity_limits, serialize_quantity
+from app.strategies import elliott_wave3_heikin_ashi as wave3_ha
 from app.models import (
     DailyRiskLedger,
     ExecutionEvent,
@@ -91,6 +92,11 @@ class AutomaticTestnetExecutor:
     def _preflight_reasons(self, db, setup, symbol, manual_approved=False):
         runtime = runtime_state(db)
         reasons = []
+        if setup.strategy == wave3_ha.STRATEGY:
+            # Hard-coded, independent of enabled_strategies_json or any other
+            # runtime configuration: this strategy remains paper-only for both
+            # manual and automatic execution until explicitly re-verified.
+            reasons.append("elliott_wave3_heikin_ashi_is_paper_only")
         if (
             self.settings.binance_environment != "testnet"
             or not self.settings.binance_execution_enabled

@@ -12,6 +12,7 @@ SETUP_TO_RUNTIME_STRATEGY = {
     "bearish_wave_5": "wave_5_continuation",
     "bullish_c_wave": "c_wave_reversal",
     "bearish_c_wave": "c_wave_reversal",
+    "elliott_wave3_heikin_ashi": "elliott_wave3_heikin_ashi",
 }
 
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -10,6 +10,7 @@ from app.elliott.service import process_elliott_candidates
 from app.elliott.setups import select_wave_strategy
 from app.execution.strategies import runtime_strategy_for_setup_name
 from app.execution.runtime import runtime_state
+from app.strategies import elliott_wave3_heikin_ashi as wave3_ha
 from app.models import (
     Alert,
     AnalysisSnapshot,
@@ -97,6 +98,27 @@ def automatic_routing_enabled(runtime: BotRuntimeState | None) -> bool:
         and not runtime.pause_new_entries
         and not runtime.kill_switch_enabled
     )
+
+
+def strategy_generation_allowed(
+    runtime: BotRuntimeState | None, runtime_strategy_id: str | None
+) -> bool:
+    """Gate NEW TradeSetup creation per strategy via the canonical strategy registry.
+
+    `BotRuntimeState.enabled_strategies_json` is the same list the Bot
+    Strategies UI writes and the execution orchestrator already checks
+    before submitting an order. An empty/unset list preserves the
+    historical default (unrestricted generation), so existing deployments,
+    tests and backtests that never configured this field are unaffected.
+    Once an operator populates it (e.g. with only
+    ["elliott_wave3_heikin_ashi"]), generation is restricted to exactly the
+    listed runtime-strategy ids - this is what "disable an old strategy"
+    means in this codebase: it stops producing new TradeSetup rows, while
+    every historical row it already created remains untouched.
+    """
+    if not runtime or not runtime.enabled_strategies_json:
+        return True
+    return runtime_strategy_id is not None and runtime_strategy_id in runtime.enabled_strategies_json
 
 
 def log_setup_decision(
@@ -697,15 +719,21 @@ async def process_closed_candle(
                 applicable_sweep is None and setup_structure.event_type == "BOS"
             )
             if applicable_sweep or continuation:
+                candidate_strategy_name = f"{direction}_{'continuation' if continuation else 'liquidity_reversal'}"
                 existing_setup = db.scalar(
                     select(TradeSetup).where(
-                        TradeSetup.strategy
-                        == f"{direction}_{'continuation' if continuation else 'liquidity_reversal'}",
+                        TradeSetup.strategy == candidate_strategy_name,
                         TradeSetup.structure_event_id == setup_structure.id,
                         TradeSetup.setup_timeframe == candle.timeframe,
                     )
                 )
-                if not existing_setup and (active_fvgs or all_blocks):
+                if (
+                    not existing_setup
+                    and (active_fvgs or all_blocks)
+                    and strategy_generation_allowed(
+                        runtime, runtime_strategy_for_setup_name(candidate_strategy_name)
+                    )
+                ):
                     decision = generate_setup(
                         direction,
                         setup_structure,
@@ -818,7 +846,9 @@ async def process_closed_candle(
                         TradeSetup.setup_timeframe == candle.timeframe,
                     )
                 )
-                if not existing_wave_setup:
+                if not existing_wave_setup and strategy_generation_allowed(
+                    runtime, runtime_strategy_for_setup_name(wave_strategy)
+                ):
                     decision = generate_setup(
                         primary_wave.direction,
                         setup_structure,
@@ -948,6 +978,64 @@ async def process_closed_candle(
                     )
                     if setup.status == "ready" and route_automatically:
                         automatic_setup_ids.append(setup.id)
+        if candle.timeframe == wave3_ha.ENTRY_TIMEFRAME and strategy_generation_allowed(
+            runtime, wave3_ha.STRATEGY
+        ):
+            wave3_config = wave3_ha.load_config(
+                runtime.strategy_config_json if runtime else {}
+            )
+            existing_wave3_setup = db.scalar(
+                select(TradeSetup.id).where(
+                    TradeSetup.strategy == wave3_ha.STRATEGY,
+                    TradeSetup.setup_timeframe == candle.timeframe,
+                    TradeSetup.detected_at == candle.close_time,
+                    TradeSetup.symbol_id == candle.symbol_id,
+                )
+            )
+            wave3_decision = (
+                None
+                if existing_wave3_setup
+                else wave3_ha.evaluate_entry(db, candle, wave3_config)
+            )
+            if wave3_decision:
+                wave3_setup = TradeSetup(
+                    symbol_id=candle.symbol_id,
+                    direction=wave3_decision.direction,
+                    strategy=wave3_ha.STRATEGY,
+                    status="ready",
+                    higher_timeframe=wave3_ha.ELLIOTT_CONTEXT_TIMEFRAME,
+                    setup_timeframe=candle.timeframe,
+                    entry_timeframe=candle.timeframe,
+                    structure_event_id=wave3_decision.structure_event_id,
+                    elliott_wave_count_id=wave3_decision.elliott_wave_count_id,
+                    entry_min=wave3_decision.entry_min,
+                    entry_max=wave3_decision.entry_max,
+                    preferred_entry=wave3_decision.entry,
+                    stop_loss=wave3_decision.stop,
+                    invalidation_price=wave3_decision.stop,
+                    take_profit_1=None,
+                    take_profit_2=None,
+                    take_profit_3=None,
+                    confidence_score=wave3_decision.confidence_score,
+                    score_breakdown_json=wave3_decision.score_breakdown,
+                    setup_conditions_json={
+                        **wave3_decision.conditions,
+                        "originating_runtime_strategy_id": wave3_ha.STRATEGY,
+                        "geometry_valid": True,
+                    },
+                    rejection_reasons_json=[],
+                    expires_at=candle.close_time + timedelta(minutes=15),
+                    detected_at=candle.close_time,
+                )
+                db.add(wave3_setup)
+                db.flush()
+                events.append(("trade_setup_created", serialize(wave3_setup)))
+                stage_counts["trade_setups_created"] += 1
+                log_setup_decision(db, wave3_setup, execution_eligible=False)
+                # This strategy never auto-executes in this phase, regardless of
+                # runtime/auto-trading state or strategy_config_json overrides -
+                # only paper-forward simulation and manual approval apply until
+                # the implementation has been verified.
         live_setups = list(
             db.scalars(
                 select(TradeSetup).where(
@@ -981,7 +1069,12 @@ async def process_closed_candle(
             if next_status == "triggered":
                 setup.triggered_at = candle.close_time
                 db.add(BotLog(level="INFO", service="analysis", event_type="setup_triggered", message=f"Setup {setup.id} triggered", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy}))
-                if allow_trading_side_effects and automatic_routing_enabled(runtime):
+                # elliott_wave3_heikin_ashi must never reach automatic execution in
+                # this phase (paper-only), regardless of global bot automation state
+                # or enabled_strategies_json - this generic lifecycle-trigger path is
+                # shared by every strategy, so it is excluded explicitly by name here
+                # rather than relying on runtime configuration alone.
+                if allow_trading_side_effects and automatic_routing_enabled(runtime) and setup.strategy != wave3_ha.STRATEGY:
                     db.add(BotLog(level="INFO", service="strategy_pipeline", event_type="execution_eligible", message="Triggered setup is eligible for execution routing", context_json={"trade_setup_id": setup.id, "symbol_id": setup.symbol_id, "timeframe": setup.setup_timeframe, "strategy": setup.strategy, "source": "lifecycle_trigger"}))
                     automatic_setup_ids.append(setup.id)
             if next_status == "invalidated":

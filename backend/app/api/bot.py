@@ -53,6 +53,7 @@ STRATEGIES = [
     "elliott_fvg",
     "multi_timeframe_continuation",
     "smc_full_confluence",
+    "elliott_wave3_heikin_ashi",
 ]
 
 

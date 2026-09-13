@@ -7,7 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Candle, LivePosition, PaperForwardTrade, Symbol, TradeSetup
+from app.execution.runtime import runtime_state
+from app.models import Candle, ElliottWaveCount, LivePosition, PaperForwardTrade, Symbol, TradeSetup
+from app.strategies import elliott_wave3_heikin_ashi as wave3_ha
+from app.strategies.heikin_ashi import confirmed_reversal, derive_heikin_ashi
 from app.trading.execution import candle_exit, execution_fee, pnl
 from app.trading.validation import validate_setup
 
@@ -15,16 +18,29 @@ D = Decimal
 SOURCE = "binance_production_spot_db"
 TERMINAL = {"closed", "expired", "invalidated"}
 TP_FRACTIONS = {1: D("0.30"), 2: D("0.40"), 3: D("0.30")}
+WAVE3_HA_STRATEGY = wave3_ha.STRATEGY
 
 
 def setup_is_eligible(setup: TradeSetup) -> bool:
     required = (setup.preferred_entry, setup.entry_min, setup.entry_max, setup.stop_loss)
-    return (
-        not setup.rejection_reasons_json
-        and all(value is not None for value in required)
-        and any(value is not None for value in (setup.take_profit_1, setup.take_profit_2, setup.take_profit_3))
-        and validate_setup(setup).valid
-    )
+    if setup.rejection_reasons_json or any(value is None for value in required):
+        return False
+    if setup.strategy == WAVE3_HA_STRATEGY:
+        # This strategy has no fixed TP ladder by design: it rides the
+        # position until a signal-driven exit (5m opposite HA reversal), a
+        # hard structural stop, or an Elliott Wave-3 invalidation. The
+        # generic reward-to-risk geometry check below assumes at least one
+        # take-profit target exists, so it does not apply here - only
+        # entry/stop geometry sanity is checked instead.
+        entry, stop = D(setup.preferred_entry), D(setup.stop_loss)
+        entry_in_zone = D(setup.entry_min) <= entry <= D(setup.entry_max)
+        stop_on_correct_side = (
+            stop < D(setup.entry_min) if setup.direction == "bullish" else stop > D(setup.entry_max)
+        )
+        return entry_in_zone and stop_on_correct_side and abs(entry - stop) > 0
+    if not any(value is not None for value in (setup.take_profit_1, setup.take_profit_2, setup.take_profit_3)):
+        return False
+    return validate_setup(setup).valid
 
 
 def enroll_setup(db: Session, setup: TradeSetup, fee_rate_pct: Decimal = D("0.1")) -> PaperForwardTrade | None:
@@ -77,8 +93,63 @@ def _record_exit(trade: PaperForwardTrade, price: Decimal, quantity: Decimal, re
         trade.status = "partially_closed"
 
 
-def process_trade_candle(trade: PaperForwardTrade, setup: TradeSetup, candle: Candle) -> bool:
-    """Process at most one exit event per candle to avoid favorable intrabar assumptions."""
+def _wave3_ha_1m_update(db: Session, trade: PaperForwardTrade, setup: TradeSetup, candle: Candle) -> bool:
+    """Hard-stop and Elliott Wave-3 invalidation checks only - no TP ladder.
+
+    Hard structural protection always wins same-candle ambiguity against a
+    same-bar invalidation, mirroring the existing Wave3-HA research replay.
+    """
+    stopped = (
+        D(candle.low) <= D(trade.active_stop)
+        if trade.direction == "bullish"
+        else D(candle.high) >= D(trade.active_stop)
+    )
+    if stopped:
+        _record_exit(trade, D(trade.active_stop), D(trade.remaining_quantity), wave3_ha.EXIT_REASON_HARD_STOP, candle.close_time)
+        return True
+    count = db.get(ElliottWaveCount, setup.elliott_wave_count_id) if setup.elliott_wave_count_id else None
+    if count and not wave3_ha.wave3_still_intact(count, D(candle.close)):
+        _record_exit(trade, D(candle.close), D(trade.remaining_quantity), wave3_ha.EXIT_REASON_INVALIDATED, candle.close_time)
+    return True
+
+
+def _wave3_ha_5m_exit(db: Session, trade: PaperForwardTrade, candle: Candle, config: "wave3_ha.Config") -> bool:
+    """Exit on a confirmed opposite 5m Heikin Ashi reversal (closed candles only).
+
+    Only reads 5m candles closed at or before `candle`, and only acts when
+    `candle` itself is the confirmation candle - a later close can never
+    change whether an earlier candle triggered this exit.
+    """
+    m5 = list(db.scalars(select(Candle).where(
+        Candle.symbol_id == candle.symbol_id, Candle.timeframe == wave3_ha.STRUCTURE_TIMEFRAME,
+        Candle.is_closed.is_(True), Candle.open_time <= candle.open_time,
+    ).order_by(Candle.open_time.desc()).limit(60)))
+    m5.reverse()
+    if len(m5) < 20 or m5[-1].id != candle.id:
+        return False
+    ha5 = derive_heikin_ashi(m5)
+    opposite_direction = "bearish" if trade.direction == "bullish" else "bullish"
+    reversal = confirmed_reversal(
+        ha5, m5, len(ha5) - 1, opposite_direction,
+        pullback_min=config.ha_pullback_min_candles,
+        wick_body_max_ratio=config.ha_wick_body_max_ratio,
+        body_atr_min_ratio=config.ha_body_atr_min_ratio,
+        confirmation_required=config.ha_confirmation_required,
+    )
+    if not reversal:
+        return False
+    _record_exit(trade, D(reversal["real_entry"]), D(trade.remaining_quantity), wave3_ha.EXIT_REASON_HA_REVERSAL, candle.close_time)
+    trade.exit_signal_candle_id = reversal["confirmation_candle_id"]
+    return True
+
+
+def process_trade_candle(trade: PaperForwardTrade, setup: TradeSetup, candle: Candle, db: Session = None) -> bool:
+    """Process at most one exit event per candle to avoid favorable intrabar assumptions.
+
+    `db` is optional and only used by the elliott_wave3_heikin_ashi branch
+    (to look up its Elliott Wave count for the invalidation check) - every
+    other strategy's call path is unchanged from before that branch existed.
+    """
     if trade.status in TERMINAL or candle.timeframe != trade.timeframe or candle.symbol_id != trade.symbol_id or not candle.is_closed:
         return False
     if candle.open_time < setup.detected_at:
@@ -102,6 +173,8 @@ def process_trade_candle(trade: PaperForwardTrade, setup: TradeSetup, candle: Ca
     distance = abs(D(trade.simulated_entry) - D(trade.stop_loss))
     trade.mfe_r = trade.max_favorable_excursion / distance
     trade.mae_r = trade.max_adverse_excursion / distance
+    if trade.strategy == WAVE3_HA_STRATEGY:
+        return _wave3_ha_1m_update(db, trade, setup, candle) if db is not None else True
     number, target = _target(trade)
     if target is None:
         _record_exit(trade, D(candle.close), D(trade.remaining_quantity), "targets_completed", candle.close_time)
@@ -140,8 +213,22 @@ def process_paper_forward_candle(db: Session, candle: Candle) -> list[PaperForwa
     )))
     for trade in rows:
         setup = db.get(TradeSetup, trade.setup_id)
-        if setup and process_trade_candle(trade, setup, candle):
+        if setup and process_trade_candle(trade, setup, candle, db):
             changed.append(trade)
+    # elliott_wave3_heikin_ashi's exit signal lives on 5m candles while the
+    # trade itself is recorded on the 1m entry timeframe, so it is checked
+    # independently of the single-timeframe loop above.
+    if candle.timeframe == wave3_ha.EXIT_TIMEFRAME:
+        runtime = runtime_state(db)
+        config = wave3_ha.load_config(runtime.strategy_config_json if runtime else {})
+        open_wave3_trades = list(db.scalars(select(PaperForwardTrade).where(
+            PaperForwardTrade.symbol_id == candle.symbol_id,
+            PaperForwardTrade.strategy == WAVE3_HA_STRATEGY,
+            PaperForwardTrade.status.in_(["open", "partially_closed"]),
+        )))
+        for trade in open_wave3_trades:
+            if trade not in changed and _wave3_ha_5m_exit(db, trade, candle, config):
+                changed.append(trade)
     return changed
 
 
