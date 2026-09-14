@@ -520,6 +520,38 @@ def test_diagnostics_records_no_ha_reversal_for_both_directions_on_flat_candles(
         assert diagnostics["outcome"] == "no_ha_reversal"
         assert diagnostics["directions"]["bullish"]["outcome"] == "no_ha_reversal"
         assert diagnostics["directions"]["bearish"]["outcome"] == "no_ha_reversal"
+        # confirmed_reversal()'s own granular reason must be nested underneath -
+        # here every candle collapses to a permanent HA plateau (open == close),
+        # so neither direction's reversal candle ever has a matching HA direction.
+        for direction in ("bullish", "bearish"):
+            ha_detail = diagnostics["directions"][direction]["ha_reversal"]
+            assert ha_detail["reason"] == "reversal_direction_failed"
+            assert ha_detail["reversal_direction"] == "neutral"
+            assert ha_detail["pullback_min"] == 2
+            assert ha_detail["confirmation_required"] is True
+            assert ha_detail["wick_body_max_ratio"] == "10"
+            assert ha_detail["body_atr_min_ratio"] == "0.01"
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_ha_reversal_detail_propagates_into_wave3_ha_evaluation_botlog(session_factory):
+    """The granular confirmed_reversal() breakdown must reach the same
+    wave3_ha_evaluation BotLog the rest of the diagnostics already use -
+    that is the whole point of adding it."""
+    with session_factory.begin() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", [(100, 101, 98, 99)] * 25)
+        db.add(BotRuntimeState(strategy_config_json=LENIENT_HA))
+        last_candle_id = candles[-1].id
+    result = await process_closed_candle(last_candle_id, broadcast=False, session_factory=session_factory)
+    assert result["processed"] is True
+    with session_factory() as db:
+        log = db.query(BotLog).filter(BotLog.event_type == "wave3_ha_evaluation").one()
+        assert log.context_json["outcome"] == "no_ha_reversal"
+        for direction in ("bullish", "bearish"):
+            ha_detail = log.context_json["directions"][direction]["ha_reversal"]
+            assert ha_detail["reason"] == "reversal_direction_failed"
+            assert ha_detail["reversal_direction"] == "neutral"
 
 
 def test_diagnostics_records_no_valid_wave3_context_when_no_elliott_count_exists(session_factory):

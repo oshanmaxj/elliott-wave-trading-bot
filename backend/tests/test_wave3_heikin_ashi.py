@@ -57,6 +57,126 @@ def test_future_candles_cannot_change_historical_signal():
     assert first == second
 
 
+def bearish_fixture():
+    return candles([(100, 102, 99, 101)] * 14 + [(101, 104, 101, 103), (103, 106, 103, 105), (105, 105, 99, 100), (100, 101, 97, 98)])
+
+
+def test_confirmed_reversal_diagnostics_reports_confirmed_reversal_with_full_values():
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    diagnostics = {}
+    signal = confirmed_reversal(ha, real, len(real) - 1, "bullish", body_atr_min_ratio=D("0.01"),
+                                 wick_body_max_ratio=D("10"), diagnostics=diagnostics)
+    assert signal is not None
+    assert diagnostics["reason"] == "confirmed_reversal"
+    assert diagnostics["pullback_min"] == 2
+    assert diagnostics["confirmation_required"] is True
+    assert diagnostics["wick_body_max_ratio"] == "10"
+    assert diagnostics["body_atr_min_ratio"] == "0.01"
+    assert diagnostics["reversal_direction"] == "bullish"
+    assert diagnostics["confirmation_direction"] == "bullish"
+    assert diagnostics["pullback_directions"] == ["bearish", "bearish"]
+    assert diagnostics["reversal_real_high"] == "101"
+    assert diagnostics["reversal_real_low"] == "95"
+    assert diagnostics["confirmation_real_high"] == "103"
+    assert diagnostics["confirmation_real_low"] == "99"
+    assert D(diagnostics["body"]) == D(signal["body"])
+    assert D(diagnostics["atr"]) == D(signal["atr"])
+    assert D(diagnostics["body_atr_ratio"]) == D(diagnostics["body"]) / D(diagnostics["atr"])
+    assert D(diagnostics["wick_body_ratio"]) == D(signal["wick_body_ratio"])
+    assert D(diagnostics["wick"]) / D(diagnostics["body"]) == D(diagnostics["wick_body_ratio"])
+
+
+def test_confirmed_reversal_diagnostics_reports_insufficient_history():
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    diagnostics = {}
+    # confirmation_index=0 with confirmation_required=True gives reversal_index=-1, below pullback_min.
+    assert confirmed_reversal(ha, real, 0, "bullish", body_atr_min_ratio=D("0.01"),
+                               wick_body_max_ratio=D("10"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "insufficient_history"
+
+
+def test_confirmed_reversal_diagnostics_reports_reversal_direction_failed():
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    diagnostics = {}
+    # This exact fixture confirms a BULLISH reversal - asking for "bearish" must mismatch the reversal candle's own direction.
+    assert confirmed_reversal(ha, real, len(real) - 1, "bearish", body_atr_min_ratio=D("0.01"),
+                               wick_body_max_ratio=D("10"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "reversal_direction_failed"
+    assert diagnostics["reversal_direction"] == "bullish"
+
+
+def test_confirmed_reversal_diagnostics_reports_pullback_sequence_failed():
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    diagnostics = {}
+    # Proven None case (see test_bullish_reversal_requires_pullback_wick_atr_and_real_breakout):
+    # widening the pullback window to 4 candles pulls in non-bearish rows.
+    assert confirmed_reversal(ha, real, len(real) - 1, "bullish", pullback_min=4, body_atr_min_ratio=D("0.01"),
+                               wick_body_max_ratio=D("10"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "pullback_sequence_failed"
+    assert diagnostics["pullback_min"] == 4
+
+
+def test_confirmed_reversal_diagnostics_reports_body_atr_failed():
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    diagnostics = {}
+    # Proven None case: an unreachably high body/ATR requirement.
+    assert confirmed_reversal(ha, real, len(real) - 1, "bullish", body_atr_min_ratio=D("10"),
+                               wick_body_max_ratio=D("10"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "body_atr_failed"
+    assert diagnostics["body_atr_min_ratio"] == "10"
+    assert D(diagnostics["body_atr_ratio"]) < D("10")
+
+
+def test_confirmed_reversal_diagnostics_reports_wick_body_ratio_failed():
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    diagnostics = {}
+    # Proven None case: zero tolerance on the wick/body ratio.
+    assert confirmed_reversal(ha, real, len(real) - 1, "bullish", body_atr_min_ratio=D("0.01"),
+                               wick_body_max_ratio=D("0"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "wick_body_ratio_failed"
+    assert diagnostics["wick_body_max_ratio"] == "0"
+    assert D(diagnostics["wick_body_ratio"]) > D("0")
+
+
+def test_confirmed_reversal_diagnostics_reports_confirmation_direction_failed():
+    real = bullish_fixture()
+    # Flip the confirmation (last) candle to a clearly bearish real shape while
+    # leaving the reversal candle before it untouched.
+    real[-1].open, real[-1].high, real[-1].low, real[-1].close = D("102"), D("103"), D("90"), D("91")
+    diagnostics = {}
+    assert confirmed_reversal(derive_heikin_ashi(real), real, len(real) - 1, "bullish", body_atr_min_ratio=D("0.01"),
+                               wick_body_max_ratio=D("10"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "confirmation_direction_failed"
+    assert diagnostics["reversal_direction"] == "bullish"
+    assert diagnostics["confirmation_direction"] == "bearish"
+
+
+def test_confirmed_reversal_diagnostics_reports_real_price_breakout_failed():
+    real = bearish_fixture()
+    # This exact mutation is the proven None case from
+    # test_bearish_reversal_and_confirmation_failure: confirmation's HA
+    # direction stays "bearish" (so it is not a confirmation_direction_failed
+    # case), but its real low no longer breaks below the reversal candle's.
+    real[-1].close = D("102"); real[-1].low = D("100")
+    diagnostics = {}
+    assert confirmed_reversal(derive_heikin_ashi(real), real, len(real) - 1, "bearish", body_atr_min_ratio=D("0.01"),
+                               wick_body_max_ratio=D("10"), diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "real_price_breakout_failed"
+    assert diagnostics["confirmation_direction"] == "bearish"
+    assert diagnostics["reversal_real_low"] == "99"
+    assert diagnostics["confirmation_real_low"] == "100"
+
+
+def test_confirmed_reversal_diagnostics_does_not_change_the_returned_signal():
+    """The diagnostics parameter is purely additive - passing it must never
+    change which candle is returned as a signal."""
+    real = bullish_fixture(); ha = derive_heikin_ashi(real)
+    without = confirmed_reversal(ha, real, len(real) - 1, "bullish", body_atr_min_ratio=D("0.01"), wick_body_max_ratio=D("10"))
+    with_diag = confirmed_reversal(ha, real, len(real) - 1, "bullish", body_atr_min_ratio=D("0.01"),
+                                    wick_body_max_ratio=D("10"), diagnostics={})
+    assert without == with_diag
+
+
 def test_wave3_gate_invalidation_scoring_variants_and_exit_priority():
     now = datetime.now(timezone.utc)
     points = [SimpleNamespace(id=i, sequence_number=i) for i in range(3)]

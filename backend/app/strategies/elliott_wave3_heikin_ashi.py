@@ -198,15 +198,18 @@ def evaluate_entry(
     direction_diagnostics: dict[str, dict[str, Any]] = {}
     for direction in ("bullish", "bearish"):
         detail: dict[str, Any] = {}
+        ha_diagnostics: dict[str, Any] = {}
         reversal = confirmed_reversal(
             ha1, m1, index, direction,
             pullback_min=config.ha_pullback_min_candles,
             wick_body_max_ratio=config.ha_wick_body_max_ratio,
             body_atr_min_ratio=config.ha_body_atr_min_ratio,
             confirmation_required=config.ha_confirmation_required,
+            diagnostics=ha_diagnostics,
         )
+        detail["ha_reversal"] = ha_diagnostics
         if not reversal:
-            direction_diagnostics[direction] = {"outcome": "no_ha_reversal"}
+            direction_diagnostics[direction] = {"outcome": "no_ha_reversal", **detail}
             continue
         price = D(reversal["real_entry"])
         detail["real_entry"] = str(price)
