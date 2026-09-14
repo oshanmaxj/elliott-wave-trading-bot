@@ -992,11 +992,33 @@ async def process_closed_candle(
                     TradeSetup.symbol_id == candle.symbol_id,
                 )
             )
+            wave3_diagnostics = {}
             wave3_decision = (
                 None
                 if existing_wave3_setup
-                else wave3_ha.evaluate_entry(db, candle, wave3_config)
+                else wave3_ha.evaluate_entry(db, candle, wave3_config, diagnostics=wave3_diagnostics)
             )
+            if not existing_wave3_setup:
+                outcome = wave3_diagnostics.get("outcome", "unknown")
+                per_direction = wave3_diagnostics.get("directions", {})
+                db.add(
+                    BotLog(
+                        level="INFO",
+                        service="strategy_pipeline",
+                        event_type="wave3_ha_evaluation",
+                        message=f"elliott_wave3_heikin_ashi evaluation for candle {candle.id}: {outcome}",
+                        context_json={
+                            "symbol": symbol_name,
+                            "symbol_id": candle.symbol_id,
+                            "candle_id": candle.id,
+                            "candle_close_time": candle.close_time.isoformat(),
+                            "outcome": outcome,
+                            "direction": wave3_diagnostics.get("direction"),
+                            "minimum_confidence": str(wave3_config.minimum_confidence),
+                            "directions": per_direction,
+                        },
+                    )
+                )
             if wave3_decision:
                 wave3_setup = TradeSetup(
                     symbol_id=candle.symbol_id,

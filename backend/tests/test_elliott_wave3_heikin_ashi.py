@@ -456,6 +456,281 @@ def test_preflight_blocks_both_manual_and_automatic_execution_even_when_strategy
     assert "elliott_wave3_heikin_ashi_is_paper_only" in manual_reasons
 
 
+def _seed_wave3_context_no_recent_swing(db, symbol, direction, decision_time, wave2_price):
+    """Like `_seed_wave3_context`, but the 5m structure swing is stored on a
+    different timeframe so `_recent_confirmed_swing` (which only looks at 5m
+    swings) never finds it. That isolates `structural_stop()`'s anchor to
+    `wave2_price` alone (no swing to take a min/max against), which is what
+    lets these tests reliably force the stop to the wrong side or too far
+    away, since it is the ONLY position argument, regardless of the exact
+    ATR value observed for the fixture's candles.
+    """
+    anchor_candles = _add_candles(db, symbol.id, "15m", [(100, 101, 99, 100)] * 3, start=START - timedelta(days=1))
+    prices, swing_types = (90, 110, wave2_price), ("low", "high", "low")
+    swings = []
+    for candle, price, swing_type in zip(anchor_candles, prices, swing_types):
+        swing = SwingPoint(symbol_id=symbol.id, timeframe="15m", candle_id=candle.id, swing_type=swing_type,
+                            price=D(str(price)), strength=D("0.8"), confirmation_candles=3, detected_at=candle.close_time)
+        db.add(swing)
+        db.flush()
+        swings.append(swing)
+    count = ElliottWaveCount(
+        symbol_id=symbol.id, timeframe="15m", degree="minor", direction=direction, pattern_type=f"{direction}_impulse",
+        status="primary", rank=1, confidence_score=D("82"), start_candle_id=anchor_candles[0].id, end_candle_id=anchor_candles[-1].id,
+        invalidation_price=D("50") if direction == "bullish" else D("150"),
+        metadata_json={"current_wave": "2", "phase": "wave_2_complete"},
+        detected_at=START - timedelta(hours=1), confirmed_at=START - timedelta(hours=1),
+    )
+    db.add(count)
+    db.flush()
+    for index, (swing, price) in enumerate(zip(swings, prices)):
+        db.add(ElliottWavePoint(wave_count_id=count.id, wave_label=str(index), sequence_number=index,
+                                 swing_point_id=swing.id, candle_id=swing.candle_id, price=D(str(price)),
+                                 timestamp=anchor_candles[index].open_time))
+    db.flush()
+    structure_candle = _add_candles(db, symbol.id, "5m", [(100, 101, 99, 100)], start=START - timedelta(hours=2))[0]
+    # Deliberately NOT "5m", so _recent_confirmed_swing's timeframe filter never matches this row.
+    structure_swing = SwingPoint(symbol_id=symbol.id, timeframe="1h", candle_id=structure_candle.id,
+                                  swing_type="low" if direction == "bullish" else "high", price=D("95"),
+                                  strength=D("0.8"), confirmation_candles=3, detected_at=structure_candle.close_time)
+    db.add(structure_swing)
+    db.flush()
+    event = MarketStructureEvent(
+        symbol_id=symbol.id, timeframe="5m", event_type="BOS", direction=direction,
+        broken_swing_id=structure_swing.id, confirmation_candle_id=structure_candle.id,
+        break_price=D("100"), previous_trend="ranging", resulting_trend=direction,
+        confidence=D("80"), detected_at=structure_candle.close_time,
+    )
+    db.add(event)
+    db.flush()
+    return count, event
+
+
+def test_diagnostics_records_no_ha_reversal_for_both_directions_on_flat_candles(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        # 25 identical candles: this exact shape is the proven "quiet baseline"
+        # segment reused (17x) at the head of BULLISH_1M_ROWS/BEARISH_1M_ROWS,
+        # which never triggers a reversal on its own - only the specially
+        # shaped candles appended after it do.
+        candles = _add_candles(db, symbol.id, "1m", [(100, 101, 98, 99)] * 25)
+        db.commit()
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "no_ha_reversal"
+        assert diagnostics["directions"]["bullish"]["outcome"] == "no_ha_reversal"
+        assert diagnostics["directions"]["bearish"]["outcome"] == "no_ha_reversal"
+
+
+def test_diagnostics_records_no_valid_wave3_context_when_no_elliott_count_exists(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        db.commit()
+        # No ElliottWaveCount seeded at all for this symbol.
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "no_valid_wave3_context"
+        assert diagnostics["directions"]["bullish"]["outcome"] == "no_valid_wave3_context"
+
+
+def test_diagnostics_records_wave3_gate_failed_when_wave2_already_invalidated(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        # A count exists, but its invalidation_price is already broken by the
+        # real entry price - wave3_gate() rejects it (not a missing-context case).
+        kept_alive = _seed_wave3_context(db, symbol, "bullish", decision_time, invalidation_price=D("150"))
+        db.commit()
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "wave3_gate_failed"
+        assert diagnostics["directions"]["bullish"]["outcome"] == "wave3_gate_failed"
+        assert diagnostics["directions"]["bullish"]["real_entry"] == "102"
+
+
+def test_diagnostics_records_no_structure_event_when_5m_structure_missing(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        anchor_candles = _add_candles(db, symbol.id, "15m", [(100, 101, 99, 100)] * 3, start=START - timedelta(days=1))
+        prices = (90, 110, 97)
+        swings = []
+        for candle, price, swing_type in zip(anchor_candles, prices, ("low", "high", "low")):
+            swing = SwingPoint(symbol_id=symbol.id, timeframe="15m", candle_id=candle.id, swing_type=swing_type,
+                                price=D(str(price)), strength=D("0.8"), confirmation_candles=3, detected_at=candle.close_time)
+            db.add(swing); db.flush(); swings.append(swing)
+        count = ElliottWaveCount(symbol_id=symbol.id, timeframe="15m", degree="minor", direction="bullish", pattern_type="bullish_impulse",
+                                  status="primary", rank=1, confidence_score=D("82"), start_candle_id=anchor_candles[0].id, end_candle_id=anchor_candles[-1].id,
+                                  invalidation_price=D("92"), metadata_json={"current_wave": "2", "phase": "wave_2_complete"},
+                                  detected_at=START - timedelta(hours=1))
+        db.add(count); db.flush()
+        for index, (swing, price) in enumerate(zip(swings, prices)):
+            db.add(ElliottWavePoint(wave_count_id=count.id, wave_label=str(index), sequence_number=index,
+                                     swing_point_id=swing.id, candle_id=swing.candle_id, price=D(str(price)), timestamp=anchor_candles[index].open_time))
+        db.commit()
+        # No 5m MarketStructureEvent seeded.
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "no_structure_event"
+        assert diagnostics["directions"]["bullish"]["outcome"] == "no_structure_event"
+        assert diagnostics["directions"]["bullish"]["elliott_wave_count_id"] == count.id
+
+
+def test_diagnostics_records_invalid_structural_stop_when_stop_lands_on_wrong_side(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        # Wave 2 above the real entry price (102): the structural stop anchor
+        # ends up on the wrong side of price for a bullish trade regardless of
+        # the small ATR-buffer subtraction.
+        kept_alive = _seed_wave3_context_no_recent_swing(db, symbol, "bullish", decision_time, wave2_price=D("105"))
+        db.commit()
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "invalid_structural_stop"
+        detail = diagnostics["directions"]["bullish"]
+        assert detail["outcome"] == "invalid_structural_stop"
+        assert D(detail["stop"]) >= D(detail["real_entry"])
+
+
+def test_diagnostics_records_stop_too_far_when_wave2_is_far_from_entry(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        # Wave 2 far below the real entry price (102), on the correct side,
+        # but the resulting stop distance vastly exceeds max_stop_atr_ratio.
+        kept_alive = _seed_wave3_context_no_recent_swing(db, symbol, "bullish", decision_time, wave2_price=D("10"))
+        db.commit()
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "stop_too_far"
+        detail = diagnostics["directions"]["bullish"]
+        assert detail["outcome"] == "stop_too_far"
+        assert D(detail["stop"]) < D(detail["real_entry"])  # correct side, just too far
+
+
+def test_diagnostics_records_confidence_below_minimum_when_threshold_raised(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        kept_alive = _seed_wave3_context(db, symbol, "bullish", decision_time)
+        db.commit()
+        # confidence_score is capped at 100, so 101 rejects unconditionally
+        # without depending on the exact score composition.
+        strict_config = wave3_ha.load_config({"elliott_wave3_heikin_ashi": {**LENIENT_HA["elliott_wave3_heikin_ashi"], "minimum_confidence": "101"}})
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], strict_config, diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "confidence_below_minimum"
+        detail = diagnostics["directions"]["bullish"]
+        assert detail["outcome"] == "confidence_below_minimum"
+        assert detail["minimum_confidence"] == "101"
+        assert D(detail["confidence_score"]) < D("101")
+
+
+def test_diagnostics_records_duplicate_event_on_blocked_reentry(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        kept_alive = _seed_wave3_context(db, symbol, "bullish", decision_time)
+        db.commit()
+        config = wave3_ha.load_config(LENIENT_HA)
+        first = wave3_ha.evaluate_entry(db, candles[-1], config)
+        assert first is not None
+        setup = TradeSetup(symbol_id=symbol.id, direction=first.direction, strategy=wave3_ha.STRATEGY, status="ready",
+                            higher_timeframe="15m", setup_timeframe="1m", entry_timeframe="1m", structure_event_id=first.structure_event_id,
+                            elliott_wave_count_id=first.elliott_wave_count_id, entry_min=first.entry_min, entry_max=first.entry_max,
+                            preferred_entry=first.entry, stop_loss=first.stop, confidence_score=first.confidence_score,
+                            setup_conditions_json=first.conditions, expires_at=decision_time + timedelta(minutes=15), detected_at=decision_time)
+        db.add(setup); db.commit()
+        diagnostics = {}
+        assert wave3_ha.evaluate_entry(db, candles[-1], config, diagnostics=diagnostics) is None
+        assert diagnostics["outcome"] == "duplicate_event"
+        assert diagnostics["directions"]["bullish"]["outcome"] == "duplicate_event"
+
+
+def test_diagnostics_records_setup_created_with_useful_values_on_success(session_factory):
+    with session_factory() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        count, event = _seed_wave3_context(db, symbol, "bullish", decision_time)
+        db.commit()
+        diagnostics = {}
+        decision = wave3_ha.evaluate_entry(db, candles[-1], wave3_ha.load_config(LENIENT_HA), diagnostics=diagnostics)
+        assert decision is not None
+        assert diagnostics["outcome"] == "setup_created"
+        assert diagnostics["direction"] == "bullish"
+        detail = diagnostics["directions"]["bullish"]
+        assert detail["outcome"] == "setup_created"
+        assert detail["real_entry"] == str(decision.entry)
+        assert detail["elliott_wave_count_id"] == count.id
+        assert D(detail["atr"]) > 0
+        assert D(detail["stop"]) == decision.stop
+        assert D(detail["confidence_score"]) == decision.confidence_score
+        assert detail["minimum_confidence"] == "70"  # LENIENT_HA does not override this default
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_wave3_ha_evaluation_botlog_and_actually_invokes_evaluate_entry_on_success(session_factory):
+    """Confirms wave3_ha.evaluate_entry() is really called (not skipped) for
+    an eligible closed 1m candle when processed through the real pipeline,
+    and that a single diagnostic BotLog is written with the expected shape.
+    """
+    with session_factory.begin() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        decision_time = candles[-1].close_time
+        count, event = _seed_wave3_context(db, symbol, "bullish", decision_time)
+        db.add(BotRuntimeState(strategy_config_json=LENIENT_HA))
+        last_candle_id = candles[-1].id
+    result = await process_closed_candle(last_candle_id, broadcast=False, session_factory=session_factory)
+    assert result["processed"] is True
+    with session_factory() as db:
+        logs = db.query(BotLog).filter(BotLog.event_type == "wave3_ha_evaluation").all()
+        assert len(logs) == 1
+        log = logs[0]
+        assert log.service == "strategy_pipeline"
+        assert log.context_json["symbol"] == "BTCUSDT"
+        assert log.context_json["candle_id"] == last_candle_id
+        assert log.context_json["outcome"] == "setup_created"
+        assert log.context_json["direction"] == "bullish"
+        assert log.context_json["minimum_confidence"] == "70"
+        assert "bullish" in log.context_json["directions"]
+        created = db.query(TradeSetup).filter(TradeSetup.strategy == wave3_ha.STRATEGY).one()
+        # SQLite (test-only; production is Postgres) drops tzinfo on a cold
+        # reload from a fresh session - compare as UTC rather than by tzinfo.
+        assert created.detected_at.replace(tzinfo=timezone.utc) == decision_time
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_wave3_ha_evaluation_botlog_on_rejection(session_factory):
+    """Same as above, but for a candle that is evaluated and rejected - the
+    diagnostic log must still be written (that is the whole point: knowing
+    *why* no TradeSetup was created), and no TradeSetup must be persisted.
+    """
+    with session_factory.begin() as db:
+        symbol = _symbol(db)
+        candles = _add_candles(db, symbol.id, "1m", BULLISH_1M_ROWS)
+        db.add(BotRuntimeState(strategy_config_json=LENIENT_HA))
+        # No Elliott wave context seeded at all.
+        last_candle_id = candles[-1].id
+    result = await process_closed_candle(last_candle_id, broadcast=False, session_factory=session_factory)
+    assert result["processed"] is True
+    with session_factory() as db:
+        logs = db.query(BotLog).filter(BotLog.event_type == "wave3_ha_evaluation").all()
+        assert len(logs) == 1
+        log = logs[0]
+        assert log.context_json["outcome"] == "no_valid_wave3_context"
+        assert log.context_json["direction"] is None
+        assert db.query(TradeSetup).filter(TradeSetup.strategy == wave3_ha.STRATEGY).count() == 0
+
+
 @pytest.mark.asyncio
 async def test_lifecycle_trigger_never_auto_routes_a_wave3_ha_setup(session_factory):
     """The pre-existing, strategy-agnostic lifecycle-trigger path (used by every

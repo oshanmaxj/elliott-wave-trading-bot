@@ -129,13 +129,50 @@ def _already_used(db, symbol_id: int, fingerprint: str) -> bool:
     return any((row or {}).get("event_fingerprint") == fingerprint for row in rows)
 
 
-def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
+# Ordered from earliest gate to latest. Used only to pick which of the two
+# per-direction rejection reasons is most informative when neither direction
+# produces a setup - it has no effect on the entry decision itself.
+_REJECTION_GATE_ORDER = [
+    "no_ha_reversal",
+    "no_valid_wave3_context",
+    "wave3_gate_failed",
+    "no_structure_event",
+    "insufficient_wave_points",
+    "atr_unavailable",
+    "invalid_structural_stop",
+    "stop_too_far",
+    "confidence_below_minimum",
+    "duplicate_event",
+]
+
+
+def _primary_rejection_reason(direction_diagnostics: dict[str, dict[str, Any]]) -> str | None:
+    best_reason = None
+    best_rank = -1
+    for detail in direction_diagnostics.values():
+        outcome = detail.get("outcome")
+        rank = _REJECTION_GATE_ORDER.index(outcome) if outcome in _REJECTION_GATE_ORDER else -1
+        if rank > best_rank:
+            best_rank = rank
+            best_reason = outcome
+    return best_reason
+
+
+def evaluate_entry(
+    db, candle: Candle, config: Config, diagnostics: dict[str, Any] | None = None
+) -> EntryDecision | None:
     """Causal 1m entry check for a just-closed 1m candle.
 
     Every read is bounded by `<= decision_time` (the closing candle's close
     time). No candle that closes after this point can affect the outcome.
+
+    If a `diagnostics` dict is passed in, it is filled in-place with the
+    outcome of every gate this evaluation passed through, for logging
+    purposes only - it never influences the decision returned.
     """
     if not config.enabled or candle.timeframe != ENTRY_TIMEFRAME:
+        if diagnostics is not None:
+            diagnostics["outcome"] = "strategy_disabled"
         return None
     decision_time = candle.close_time
     m1 = list(
@@ -153,10 +190,14 @@ def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
     )
     m1.reverse()
     if len(m1) < max(20, config.ha_pullback_min_candles + 2) or m1[-1].id != candle.id:
+        if diagnostics is not None:
+            diagnostics["outcome"] = "insufficient_candle_history"
         return None
     ha1 = derive_heikin_ashi(m1)
     index = len(ha1) - 1
+    direction_diagnostics: dict[str, dict[str, Any]] = {}
     for direction in ("bullish", "bearish"):
+        detail: dict[str, Any] = {}
         reversal = confirmed_reversal(
             ha1, m1, index, direction,
             pullback_min=config.ha_pullback_min_candles,
@@ -165,8 +206,10 @@ def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
             confirmation_required=config.ha_confirmation_required,
         )
         if not reversal:
+            direction_diagnostics[direction] = {"outcome": "no_ha_reversal"}
             continue
         price = D(reversal["real_entry"])
+        detail["real_entry"] = str(price)
         counts = list(
             db.scalars(
                 select(ElliottWaveCount)
@@ -180,9 +223,15 @@ def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
                 .limit(10)
             )
         )
+        if not counts:
+            direction_diagnostics[direction] = {"outcome": "no_valid_wave3_context", **detail}
+            continue
         count = next((c for c in counts if wave3_gate(c, decision_time, price)[0]), None)
         if not count:
+            direction_diagnostics[direction] = {"outcome": "wave3_gate_failed", **detail}
             continue
+        detail["elliott_wave_count_id"] = count.id
+        detail["elliott_confidence"] = str(count.confidence_score)
         structure_event = db.scalar(
             select(MarketStructureEvent)
             .where(
@@ -195,17 +244,28 @@ def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
             .limit(1)
         )
         if not structure_event:
+            direction_diagnostics[direction] = {"outcome": "no_structure_event", **detail}
             continue
         points = sorted(count.points, key=lambda p: p.sequence_number)
         if len(points) < 3:
+            direction_diagnostics[direction] = {"outcome": "insufficient_wave_points", **detail}
             continue
         wave0, wave1, wave2 = points[0], points[1], points[2]
         atr = atr_at(m1, index)
         if atr is None:
+            direction_diagnostics[direction] = {"outcome": "atr_unavailable", **detail}
             continue
+        detail["atr"] = str(atr)
         swing = _recent_confirmed_swing(db, candle.symbol_id, direction, decision_time)
         stop = structural_stop(direction, D(wave2.price), D(swing.price) if swing else None, atr, config.atr_stop_buffer)
-        if abs(price - stop) > atr * config.max_stop_atr_ratio or (stop >= price if direction == "bullish" else stop <= price):
+        detail["stop"] = str(stop)
+        wrong_side = stop >= price if direction == "bullish" else stop <= price
+        too_far = abs(price - stop) > atr * config.max_stop_atr_ratio
+        if too_far or wrong_side:
+            direction_diagnostics[direction] = {
+                "outcome": "invalid_structural_stop" if wrong_side else "stop_too_far",
+                **detail,
+            }
             continue
         score_breakdown = {
             "elliott_wave_confluence": float(count.confidence_score),
@@ -213,12 +273,21 @@ def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
             "structural_swing_alignment_bonus": 5.0 if swing else 0.0,
         }
         confidence_score = min(D("100"), D(str(sum(score_breakdown.values()))))
+        detail["confidence_score"] = str(confidence_score)
+        detail["minimum_confidence"] = str(config.minimum_confidence)
         if confidence_score < config.minimum_confidence:
+            direction_diagnostics[direction] = {"outcome": "confidence_below_minimum", **detail}
             continue
         fingerprint = event_fingerprint(candle.symbol_id, direction, count.id, reversal["reversal_candle_id"])
         if not config.reentry_enabled and _already_used(db, candle.symbol_id, fingerprint):
+            direction_diagnostics[direction] = {"outcome": "duplicate_event", **detail}
             continue
         entry_tolerance = atr * D("0.05")
+        direction_diagnostics[direction] = {"outcome": "setup_created", **detail}
+        if diagnostics is not None:
+            diagnostics["outcome"] = "setup_created"
+            diagnostics["direction"] = direction
+            diagnostics["directions"] = direction_diagnostics
         return EntryDecision(
             direction=direction,
             entry=price,
@@ -247,6 +316,9 @@ def evaluate_entry(db, candle: Candle, config: Config) -> EntryDecision | None:
                 "structural_swing_id": swing.id if swing else None,
             },
         )
+    if diagnostics is not None:
+        diagnostics["outcome"] = _primary_rejection_reason(direction_diagnostics)
+        diagnostics["directions"] = direction_diagnostics
     return None
 
 
