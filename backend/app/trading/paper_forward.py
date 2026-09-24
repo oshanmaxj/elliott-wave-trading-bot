@@ -43,15 +43,42 @@ def setup_is_eligible(setup: TradeSetup) -> bool:
     return validate_setup(setup).valid
 
 
+def _fee_aware_quantity(entry: Decimal, stop: Decimal, risk_amount: Decimal, fee_rate_pct: Decimal) -> Decimal | None:
+    """Size the position so total planned loss at the initial hard stop -
+    price movement plus entry and exit fees, both estimated at `fee_rate_pct`
+    via the same `execution_fee()` helper the engine later charges - comes to
+    approximately `risk_amount`.
+
+    `execution_fee(price, quantity, fee_pct)` is linear in quantity, so the
+    per-unit fee cost (quantity=1) can be solved for directly instead of
+    hardcoding the underlying price*fee_pct/100 formula a second time:
+
+        planned_stop_loss(q) = q * distance + execution_fee(entry, q, fee_rate_pct)
+                                             + execution_fee(stop, q, fee_rate_pct)
+                              = q * (distance + fee_per_unit)
+
+    Solving `planned_stop_loss(q) = risk_amount` for q gives the formula below.
+    """
+    distance = abs(entry - stop)
+    if distance <= 0 or risk_amount <= 0 or fee_rate_pct < 0:
+        return None
+    fee_per_unit = execution_fee(entry, D("1"), fee_rate_pct) + execution_fee(stop, D("1"), fee_rate_pct)
+    denominator = distance + fee_per_unit
+    if denominator <= 0:
+        return None
+    return risk_amount / denominator
+
+
 def enroll_setup(db: Session, setup: TradeSetup, fee_rate_pct: Decimal = D("0.1")) -> PaperForwardTrade | None:
     existing = db.scalar(select(PaperForwardTrade).where(PaperForwardTrade.setup_id == setup.id))
     if existing or not setup_is_eligible(setup):
         return existing
     symbol = db.get(Symbol, setup.symbol_id)
-    distance = abs(D(setup.preferred_entry) - D(setup.stop_loss))
-    if not symbol or distance <= 0:
+    entry, stop = D(setup.preferred_entry), D(setup.stop_loss)
+    risk_amount = D("1")  # one normalized quote-currency risk unit
+    quantity = _fee_aware_quantity(entry, stop, risk_amount, fee_rate_pct) if symbol else None
+    if quantity is None or quantity <= 0:
         return None
-    quantity = D("1") / distance  # one normalized quote-currency risk unit
     row = PaperForwardTrade(
         setup_id=setup.id, symbol_id=setup.symbol_id, symbol=symbol.symbol,
         strategy=setup.strategy, direction=setup.direction, timeframe=setup.setup_timeframe,
@@ -59,7 +86,7 @@ def enroll_setup(db: Session, setup: TradeSetup, fee_rate_pct: Decimal = D("0.1"
         entry_min=setup.entry_min, entry_max=setup.entry_max, stop_loss=setup.stop_loss,
         active_stop=setup.stop_loss, take_profit_1=setup.take_profit_1,
         take_profit_2=setup.take_profit_2, take_profit_3=setup.take_profit_3,
-        initial_quantity=quantity, remaining_quantity=quantity, risk_amount=1,
+        initial_quantity=quantity, remaining_quantity=quantity, risk_amount=risk_amount,
         fee_rate_pct=fee_rate_pct, status="waiting_entry", market_data_source=SOURCE,
     )
     try:
